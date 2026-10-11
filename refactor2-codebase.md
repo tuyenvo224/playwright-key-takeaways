@@ -30,6 +30,12 @@
 15. [CI chọn browser và chạy tay](#15-ci-chọn-browser-và-chạy-tay)
 16. [GitHub CLI (`gh`)](#16-github-cli-gh)
 
+**Phần 3 — Vận hành và quyết định**
+
+17. [Chi phí GitHub Actions và rủi ro repo public](#17-chi-phí-github-actions-và-rủi-ro-repo-public)
+18. [Viết commit message tốt](#18-viết-commit-message-tốt)
+19. [Chạy song song nhiều worker (đã cân nhắc, giữ 1 worker)](#19-chạy-song-song-nhiều-worker-đã-cân-nhắc-giữ-1-worker)
+
 ---
 
 ## 1. Tổng quan session
@@ -55,8 +61,12 @@ Các việc đã làm, theo thứ tự thời gian:
 | 15 | Cập nhật tài liệu | `01-website-feature.md` thêm mục 1.4 và mục 4 (timing) |
 | 16 | Commit bản fix (`ee78d77`), chạy tay CI với `all` | **Vẫn fail**: 8 test Add User trên firefox, 6 trên webkit — dù local đã pass |
 | 17 | Phân tích report lần 2: đo thời điểm trên 14 trace + đọc mã nguồn `user-profile.js` | Tìm ra **nguyên nhân gốc**: form chỉ sẵn sàng khi `zxcvbn.min.js` tải xong |
-| 18 | Thêm `waitForAddUserFormReady()` (chờ ô Password có giá trị), override `clickAddUserTab()` | Commit `e86bb67` — ⏳ chờ xác nhận trên CI |
+| 18 | Thêm `waitForAddUserFormReady()` (chờ ô Password có giá trị), override `clickAddUserTab()` | Commit `e86bb67` |
 | 19 | Cập nhật `01-website-feature.md` + file ghi chú này theo nguyên nhân đầy đủ | |
+| 20 | Chạy tay CI với `all` để xác nhận bản sửa | ✅ **Cả chromium, firefox, webkit đều pass** — lỗi Add User đã được xử lý tận gốc |
+| 21 | Tìm hiểu chi phí chạy CI | Repo public → miễn phí. Phát hiện rủi ro: trace trong artifact chứa mật khẩu admin ([mục 17](#17-chi-phí-github-actions-và-rủi-ro-repo-public)) |
+| 22 | Đặt commit message cho bản sửa zxcvbn | Không dùng lại message cũ, viết tiêu đề + thân rõ ràng ([mục 18](#18-viết-commit-message-tốt)) |
+| 23 | Cân nhắc chạy nhiều worker trên CI | Phân tích rủi ro trùng dữ liệu `Date.now()` → **quyết định giữ 1 worker** ([mục 19](#19-chạy-song-song-nhiều-worker-đã-cân-nhắc-giữ-1-worker)) |
 
 **Quy tắc làm việc của dự án** (trong [AGENTS.md](../AGENTS.md)): luôn trình bày những việc sẽ làm, **chờ xác nhận** rồi mới bắt đầu. Đó là lý do mỗi yêu cầu trong session đều có một bước "kế hoạch → bạn duyệt → thực hiện".
 
@@ -457,6 +467,51 @@ git config --get-regexp '^branch\.' # (trống)      ← main local CHƯA theo d
 
 Nếu gặp lỗi **rejected / non-fast-forward**: trên GitHub có commit mà local chưa có. **Không dùng `--force`**, vì nó sẽ ghi đè và làm mất commit trên GitHub. Cần `git pull` để gộp về trước, rồi mới push.
 
+### 7.6 CI chỉ chạy code ĐÃ PUSH — kiểm tra local và GitHub có đồng bộ không
+
+Khi CI fail mà local pass, câu hỏi đầu tiên nên hỏi: **CI có đang chạy đúng code mới không?** GitHub Actions lấy code **trên GitHub** (`actions/checkout`), không phải code trên máy bạn. Code sửa xong nhưng chưa commit, hoặc commit rồi chưa push → CI vẫn chạy bản cũ.
+
+```bash
+git status --short                                   # còn thay đổi chưa commit không?
+git fetch origin                                     # cập nhật thông tin nhánh trên GitHub về máy (không đổi code của bạn)
+git log --oneline -3 origin/main                     # GitHub đang ở commit nào?
+git rev-list --left-right --count main...origin/main # đếm commit lệch nhau
+```
+
+Kết quả lệnh cuối là 2 con số `A	B`:
+
+| Kết quả | Nghĩa |
+|---|---|
+| `0	0` | ✅ Local và GitHub giống hệt nhau — CI chạy đúng code của bạn |
+| `2	0` | Local **đi trước** 2 commit — cần `git push` |
+| `0	1` | GitHub **đi trước** 1 commit — cần `git pull` |
+
+Trong session, lần CI vẫn fail sau khi sửa: kiểm tra ra `0 0` (cùng ở commit `ee78d77`) → loại trừ được khả năng "chưa push", và tập trung vào phân tích report — dẫn tới tìm ra nguyên nhân zxcvbn.
+
+### 7.7 `git add .` an toàn khi nào?
+
+`git add .` đưa **mọi** thay đổi trong thư mục vào staging. An toàn khi:
+- `.gitignore` đã chặn đủ những thứ không được commit (trong dự án: `.env`, `ci-report/`, `notes/`, `test-results/`, `playwright-report/`, `node_modules/`).
+- Không có file tạm/lạ nào mới xuất hiện.
+
+Có thể kiểm tra nhanh nhiều đường dẫn cùng lúc:
+
+```bash
+git check-ignore .env ci-report notes test-results playwright-report
+# In ra tên nào = tên đó đang bị ignore
+```
+
+**Thói quen nên giữ:** sau `git add .`, luôn `git status` **trước khi commit** — để chắc không có file report, file tạm mới mà `.gitignore` chưa chặn lọt vào.
+
+**Sau lần push `-u` đầu tiên**, nhánh `main` đã có upstream → các lần sau chỉ cần:
+
+```bash
+git add .
+git status
+git commit -m "..."
+git push          # không cần "-u origin main" nữa
+```
+
 ---
 
 ## 8. GitHub Actions (CI)
@@ -591,7 +646,7 @@ Lúc này chỉ có **giả thuyết** (khác biệt riêng của Firefox, hoặ
 
 | Lỗi | Nguyên nhân thật | Đã sửa bằng |
 |---|---|---|
-| 7 test Add User fail (Firefox) — và 8 test firefox + 6 test webkit ở lần chạy tay `all` | **Gốc:** form Add User chỉ khởi tạo xong khi `zxcvbn.min.js` (~400KB, tải **sau** `load`) tải xong. Test thao tác trước thời điểm đó → 2 hệ quả: (a) **chữ bị điền nhầm ô** (WordPress giành focus về ô Password), (b) **bấm submit mà form không được gửi đi** | `waitForAddUserFormReady()` (chờ ô Password có giá trị) — ⏳ chờ xác nhận CI. `fillAndVerify()` giữ làm lớp bảo vệ thêm |
+| 7 test Add User fail (Firefox) — và 8 test firefox + 6 test webkit ở lần chạy tay `all` | **Gốc:** form Add User chỉ khởi tạo xong khi `zxcvbn.min.js` (~400KB, tải **sau** `load`) tải xong. Test thao tác trước thời điểm đó → 2 hệ quả: (a) **chữ bị điền nhầm ô** (WordPress giành focus về ô Password), (b) **bấm submit mà form không được gửi đi** | `waitForAddUserFormReady()` (chờ ô Password có giá trị) — ✅ đã xác nhận trên CI (cả 3 browser pass). `fillAndVerify()` giữ làm lớp bảo vệ thêm |
 | `add-user.spec.ts:127` flaky (Firefox) | Cùng nguyên nhân trên (lần retry may mắn: zxcvbn tải xong kịp) | Như trên |
 | `account-permissions` flaky (WebKit) | Menu Log Out mở bằng hover có độ trễ, click hụt rồi chờ mãi | `logout()` với `mouse.move` + `toPass()` |
 | (Phát hiện thêm khi chạy local) Login lại trong `afterEach` fail | Trang login tự focus ô Username, mật khẩu đè vào ô Username | `login()` kiểm tra cả form |
@@ -678,25 +733,26 @@ Ngoài lệnh, cần tự kiểm tra:
 
 | Việc | Cách giải quyết |
 |---|---|
-| ~~7 test Firefox fail trong `add-user.spec.ts`~~ | Tìm ra nguyên nhân gốc (zxcvbn) → `waitForAddUserFormReady()` + `fillAndVerify()` ([mục 13.3](#133-lỗi-1--trang-add-user-form-chỉ-sẵn-sàng-khi-zxcvbn-tải-xong)) — ⏳ chờ xác nhận CI |
+| ~~7 test Firefox fail trong `add-user.spec.ts`~~ | Tìm ra nguyên nhân gốc (zxcvbn) → `waitForAddUserFormReady()` + `fillAndVerify()` ([mục 13.3](#133-lỗi-1--trang-add-user-form-chỉ-sẵn-sàng-khi-zxcvbn-tải-xong)) — ✅ đã xác nhận trên CI |
 | ~~3 test flaky~~ | `fillAndVerify()`, `logout()` mới, timeout 60s ([mục 13](#13-race-condition-và-3-lỗi-flaky-đã-sửa)) |
 | ~~Tăng tốc CI~~ | Push/PR chỉ chạy chromium, chạy tay được `all` ([mục 15](#15-ci-chọn-browser-và-chạy-tay)) |
 | ~~Commit & push bản fix flaky + CI chọn browser~~ | Commit `ee78d77` |
 | ~~`clickAddUserTab()` chưa chờ form sẵn sàng~~ | Override trong `UserPage`, gọi `waitForAddUserFormReady()` (commit `e86bb67`) |
+| ~~Xác nhận bản sửa zxcvbn trên CI~~ | Chạy tay `all`: cả 3 browser pass ✅ |
 
 ### Còn lại
 
 | # | Việc | Mức độ | Ghi chú |
 |---|---|---|---|
-| 1 | **Xác nhận bản sửa zxcvbn trên CI** | 🔴 Cao | Tab Actions → Run workflow → `all`, chạy 2–3 lần. Lỗi phụ thuộc tốc độ mạng của máy CI nên local pass không đủ để kết luận |
-| 2 | Kiểm tra **user test bị sót** trên site | 🟠 Trung bình | Từ các lần `afterEach` bị cắt giữa chừng hoặc test fail — tìm `tuyen-` trong Users |
-| 3 | Xem lại việc **repo public** làm lộ mật khẩu qua trace trong artifact | 🟠 Trung bình | Trace ghi nguyên văn giá trị `fill()`, kể cả mật khẩu admin; GitHub không che secrets bên trong artifact. Hướng: chuyển repo private, xóa artifact cũ, tắt trace trên CI, hoặc đổi mật khẩu |
-| 4 | `tests/storefront/home.spec.ts:14` vẫn hardcode URL | 🟡 Thấp | Đề xuất: `toHaveURL(/^https?:\/\/[^/]+\/$/)` ([mục 6](#6-viết-assertion-đúng--tránh-assertion-luôn-pass)) |
-| 5 | Text `"... - Dev environment"` gắn với môi trường dev | 🟡 Thấp | Cần xem lại nếu chạy trên môi trường khác |
-| 6 | ~34 dòng code cũ để dạng comment (`//await ...`) | ⚪ Tùy chọn | Trong fixture, `add-user.page.ts`, `login.page.ts`, các file test — gồm cả bản cũ của `login()`, `hoverProfile()/clickLogout()`. Có git lưu lịch sử rồi nên có thể xóa cho gọn |
-| 7 | Alias `@data/*` chưa có thư mục `src/data/` | ⚪ Tùy chọn | Tạo khi cần dữ liệu test tĩnh |
-| 8 | Tăng `workers` trên CI | ⚪ Tùy chọn | Cân nhắc vì các test dùng chung tài khoản admin |
-| 9 | Cài GitHub CLI | ⚪ Tùy chọn | Cần IT cài (máy công ty) — xem [mục 16](#16-github-cli-gh) |
+| 1 | Kiểm tra **user test bị sót** trên site | 🟠 Trung bình | Từ các lần `afterEach` bị cắt giữa chừng hoặc test fail — tìm `tuyen-` trong Users |
+| 2 | Xem lại việc **repo public** làm lộ mật khẩu qua trace trong artifact | 🟠 Trung bình | Trace ghi nguyên văn giá trị `fill()`, kể cả mật khẩu admin; GitHub không che secrets bên trong artifact. Hướng: chuyển repo private, xóa artifact cũ, tắt trace trên CI, hoặc đổi mật khẩu |
+| 3 | `tests/storefront/home.spec.ts:14` vẫn hardcode URL | 🟡 Thấp | Đề xuất: `toHaveURL(/^https?:\/\/[^/]+\/$/)` ([mục 6](#6-viết-assertion-đúng--tránh-assertion-luôn-pass)) |
+| 4 | Text `"... - Dev environment"` gắn với môi trường dev | 🟡 Thấp | Cần xem lại nếu chạy trên môi trường khác |
+| 5 | ~34 dòng code cũ để dạng comment (`//await ...`) | ⚪ Tùy chọn | Trong fixture, `add-user.page.ts`, `login.page.ts`, các file test — gồm cả bản cũ của `login()`, `hoverProfile()/clickLogout()`. Có git lưu lịch sử rồi nên có thể xóa cho gọn |
+| 6 | Alias `@data/*` chưa có thư mục `src/data/` | ⚪ Tùy chọn | Tạo khi cần dữ liệu test tĩnh |
+| 7 | Tăng `workers` trên CI | ⚪ Tùy chọn | Cân nhắc vì các test dùng chung tài khoản admin |
+| 8 | Cài GitHub CLI | ⚪ Tùy chọn | Cần IT cài (máy công ty) — xem [mục 16](#16-github-cli-gh) |
+| 9 | Theo dõi thêm vài lần chạy CI với `all` | ⚪ Tùy chọn | Lỗi timing là flaky — 1 lần pass đã là bằng chứng tốt, nhưng theo dõi thêm vài lần (nhất là khi site hoặc WordPress cập nhật) giúp chắc chắn hơn |
 
 ---
 
@@ -891,6 +947,18 @@ async waitForAddUserFormReady() {
 
 **Vì sao chờ "ô Password có giá trị" mà không chờ "file zxcvbn tải xong"?** Vì đó là **dấu hiệu nhìn thấy được trên giao diện** — đúng tinh thần Playwright (kiểm tra cái người dùng thấy), không phụ thuộc chi tiết kỹ thuật bên trong (tên file, cách tải). `expect(...).not.toHaveValue('')` tự thử lại tối đa 5s — dư cho mức chậm nhất đã đo (870ms).
 
+**Vì sao `expect` tự "chờ" được?** Các assertion dạng `expect(locator).toXxx()` của Playwright là **web-first assertion**: chúng **không** kiểm tra một lần rồi báo kết quả ngay, mà **liên tục kiểm tra lại** cho tới khi điều kiện đúng hoặc hết timeout (mặc định 5 giây):
+
+```
+t=0ms    ô Password = ""          → chưa đúng, thử lại
+t=100ms  ô Password = ""          → chưa đúng, thử lại
+...
+t=870ms  ô Password = "NYAvdF!*…" → ĐÚNG → expect pass, code chạy tiếp
+(nếu tới t=5000ms vẫn "" → expect fail, báo lỗi)
+```
+
+Vì vậy dùng `expect` làm "điều kiện chờ" vừa **chờ đúng lâu cần thiết** (máy nhanh thì đi tiếp ngay), vừa **báo lỗi rõ ràng** nếu trang thật sự hỏng — tốt hơn hẳn `waitForTimeout(1000)` (chờ cố định, thừa hoặc thiếu). Lưu ý: chỉ `expect(locator)...` / `expect(page)...` mới tự chờ; `expect(giá trị thường).toBe(...)` thì kiểm tra **một lần**.
+
 **Override là gì?** `clickAddUserTab()` gốc nằm ở `DashboardBasePage` — lớp này không có `passwordTextBoxLoc` nên không gọi được `waitForAddUserFormReady()`. Viết lại method **cùng tên** trong `UserPage`: `super.clickAddUserTab()` chạy bản gốc (click submenu), rồi chờ form. Test gọi `userPage.clickAddUserTab()` tự động dùng bản của `UserPage` — không phải sửa file test.
 
 **Lớp bảo vệ thêm — `fillAndVerify()`** (giữ lại từ vòng 2):
@@ -908,7 +976,7 @@ async fillAndVerify(locator: Locator, value: string) {
 
 **Ô Password bị nối thêm chữ có sao không?** Không: test không điền Password thì không quan tâm mật khẩu là gì; test có điền thì `fillPassword()` dùng `fill()` **ghi đè toàn bộ** ô.
 
-**Trạng thái:** ⏳ commit `e86bb67` đang chờ xác nhận trên CI với cả 3 browser (chạy tay `all`, 2–3 lần).
+**Trạng thái:** ✅ commit `e86bb67` **đã được xác nhận trên CI**: chạy tay workflow với lựa chọn `all` — cả chromium, firefox, webkit đều pass (lần chạy trước đó: 8 test fail trên firefox, 6 trên webkit).
 
 ### 13.4 Lỗi 2 — Trang login: mật khẩu đè vào ô Username
 
@@ -1232,3 +1300,204 @@ gh auth login     # đăng nhập 1 lần: GitHub.com → SSH → đăng nhập 
 **Phân biệt:** "làm được về mặt kỹ thuật" ≠ "nên làm". Với máy công ty, chính sách bảo mật được ưu tiên.
 
 `gh` là **tùy chọn**: không có nó vẫn làm được mọi thứ, chỉ thêm vài bước thủ công (tải report, chụp màn hình log...).
+
+---
+
+## 17. Chi phí GitHub Actions và rủi ro repo public
+
+### 17.1 Chạy CI có tốn tiền không?
+
+Phụ thuộc **repo public hay private** và **loại máy chạy (runner)**:
+
+| Trường hợp | Chi phí |
+|---|---|
+| **Repo public** + runner tiêu chuẩn (`ubuntu-latest`...) — **trường hợp của dự án này** | ✅ Miễn phí, không giới hạn phút |
+| Repo **private**, gói GitHub Free | Miễn phí **2.000 phút/tháng**, đầu tháng đặt lại về 0 |
+| Repo private, gói Pro / Team | 3.000 phút/tháng |
+| **Larger runner** (máy cấu hình cao, phải tự chọn trong workflow) | Luôn tính phí, kể cả repo public |
+
+- Hết quota mà tài khoản **chưa khai báo phương thức thanh toán** → GitHub chỉ **chặn không cho chạy tiếp** tới tháng sau, **không tự trừ tiền**.
+- Ước tính nếu chuyển private: mỗi lần chạy chromium ~5–7 phút → 2.000 phút ≈ 300 lần chạy/tháng.
+- Đầu năm 2026 GitHub giảm giá runner trả phí, giữ nguyên quota miễn phí. Giá có thể thay đổi → muốn chắc chắn, xem **Settings → Billing** của tài khoản. Nguồn: [GitHub Docs — Actions billing](https://docs.github.com/billing/managing-billing-for-github-actions/about-billing-for-github-actions).
+
+**Cách kiểm tra repo public hay private:** trang repo trên GitHub có nhãn **Public**/**Private** cạnh tên repo; hoặc gọi API công khai (không cần đăng nhập):
+
+```bash
+curl -s https://api.github.com/repos/<user>/<repo> | grep '"visibility"'
+# "visibility": "public"     ← repo private sẽ trả về lỗi 404 (người ngoài không thấy được)
+```
+
+### 17.2 ⚠️ Rủi ro quan trọng hơn chi phí: lộ mật khẩu qua trace
+
+Repo public = **ai cũng xem được** code, log CI, và **tải được artifact** `playwright-report`.
+
+Khi phân tích report trong session, phát hiện **trace ghi lại nguyên văn mọi giá trị được `fill()`**, kể cả tài khoản và mật khẩu admin:
+
+```
+fill  "Username or Email Address"  value: "betterbytes.academy.admin"
+fill  "Password"                   value: "StrongPass@..."
+```
+
+| GitHub che secrets ở đâu? | |
+|---|---|
+| Trong **log** của bước chạy | ✅ Tự thay thành `***` |
+| Bên trong **file artifact** (report, trace) | ❌ **Không che** |
+
+Config đang có `trace: 'on-first-retry'` → mỗi khi có test được retry trên CI, report upload lên chứa trace kèm mật khẩu.
+
+**Đánh giá mức độ** — tùy tài khoản này là gì:
+- Tài khoản **thực hành dùng chung** của khóa học, mật khẩu không dùng ở đâu khác → rủi ro thấp.
+- Tài khoản **riêng**, hoặc mật khẩu dùng lại ở nơi khác → cần xử lý ngay.
+
+**Các hướng xử lý** (chưa áp dụng — vẫn nằm trong [mục 11](#11-việc-còn-tồn-đọng)):
+
+| Hướng | Ưu | Nhược |
+|---|---|---|
+| Chuyển repo sang **private** (Settings → General → Danger Zone) | Triệt để nhất | CI tính vào quota 2.000 phút/tháng (vẫn đủ dùng) |
+| **Xóa artifact cũ** có trace (mở lần chạy → Artifacts → thùng rác) | Gỡ phần đã lộ | Không ngăn được lần sau |
+| **Tắt trace trên CI** (`trace: process.env.CI ? 'off' : 'on-first-retry'`) hoặc giảm `retention-days` | Ngăn lộ về sau | Khi CI fail sẽ **khó điều tra** — chính trace đã giúp tìm ra lỗi zxcvbn |
+| **Đổi mật khẩu** admin rồi cập nhật secret `ADMIN_PASSWORD` + `.env` | Vô hiệu hóa mật khẩu đã lộ | Không ngăn được lần sau |
+
+> **Bài học:** "secrets đã được che" chỉ đúng với **log**. Mọi thứ test **ghi lại** (trace, screenshot, video, report) đều có thể chứa dữ liệu nhạy cảm — cần biết artifact được lưu ở đâu và **ai** tải được.
+
+---
+
+## 18. Viết commit message tốt
+
+### 18.1 Vì sao không nên dùng lại message cũ?
+
+Trong session, suýt có 2 commit cùng message:
+
+```
+ee78d77 fix: resolve flaky test     ← 10 file: fillAndVerify, login(), logout(), timeout, CI chọn browser, docs
+??????? fix: resolve flaky test     ← 1 file: chờ form Add User khởi tạo xong (zxcvbn)
+```
+
+Git **không chặn** message trùng, nhưng sau này xem `git log` sẽ không phân biệt được commit nào sửa gì → muốn tìm lại thay đổi "chờ zxcvbn" (để revert, để tham khảo) phải mở từng commit ra xem.
+
+### 18.2 Cấu trúc một commit message
+
+```bash
+git commit -m "fix: wait for Add User form to finish initializing before interacting" -m "WordPress only fills the generated password and focuses the Password field after zxcvbn.min.js loads (after the 'load' event). Submitting before that does not send the form, causing Add User tests to fail on CI (firefox/webkit)."
+```
+
+| Phần | Viết thế nào | Ví dụ |
+|---|---|---|
+| `-m` thứ nhất = **tiêu đề** | Ngắn (~50–72 ký tự), nói commit **làm gì**, **thể mệnh lệnh** ("wait for…", không viết "waited for…" / "waiting…") | `fix: wait for Add User form to finish initializing before interacting` |
+| `-m` thứ hai = **thân** (tùy chọn) | Giải thích **vì sao** — bối cảnh, nguyên nhân | Đoạn giải thích zxcvbn ở trên |
+
+Mẹo kiểm tra tiêu đề: đọc thử *"Nếu áp dụng commit này, nó sẽ … [tiêu đề]"* — phải thành câu hợp lý.
+
+### 18.3 Conventional Commits (chuẩn dự án đang dùng)
+
+```
+<loại>(<phạm vi — tùy chọn>): <mô tả>
+```
+
+| Loại | Dùng khi | Ví dụ |
+|---|---|---|
+| `feat` | Thêm tính năng / thay đổi lớn | `feat: Refactor project structure into src/, add path aliases, update docs and CI` (đã dùng) |
+| `fix` | Sửa lỗi | `fix: wait for Add User form to finish initializing before interacting` (đã dùng) |
+| `docs` | Chỉ sửa tài liệu | `docs: explain zxcvbn root cause in website feature notes` |
+| `test` | Thêm/sửa test | `test: add storefront category tests` |
+| `ci` | Sửa cấu hình CI | `ci: run chromium only on push, allow manual run for all browsers` |
+| `refactor` | Đổi cấu trúc code, không đổi hành vi | `refactor: move logout into DashboardBasePage` |
+
+**Phạm vi** (trong ngoặc) giúp rõ hơn khu vực bị ảnh hưởng: `fix(users): ...`, `ci(workflow): ...`.
+
+Lợi ích: lọc nhanh lịch sử (`git log --oneline --grep "^fix"`), và nhiều công cụ tự sinh changelog dựa vào chuẩn này.
+
+### 18.4 Không sửa message của commit đã push
+
+Commit `ee78d77` có message chưa tốt, nhưng **đã push lên GitHub** → **không nên sửa**:
+- Sửa message = tạo commit mới thay thế (`git commit --amend` / `rebase`) → phải `git push --force` → **viết lại lịch sử chung**, ai đã lấy code về sẽ bị lệch.
+- Commit **chưa push** thì sửa thoải mái: `git commit --amend -m "message mới"`.
+
+→ Từ giờ chỉ cần đặt message rõ ràng hơn, không cần quay lại sửa commit cũ.
+
+---
+
+## 19. Chạy song song nhiều worker (đã cân nhắc, giữ 1 worker)
+
+> **Quyết định:** sau khi phân tích, **giữ nguyên 1 worker trên CI**. Mục này ghi lại phân tích để dùng khi muốn tăng tốc sau này.
+
+### 19.1 Worker là gì, cấu hình ở đâu?
+
+**Worker** = một tiến trình chạy test riêng (có trình duyệt riêng). N worker = N test chạy **cùng lúc**.
+
+```ts
+// playwright.config.ts
+fullyParallel: true,                       // test trong CÙNG 1 file cũng được chia cho nhiều worker
+workers: process.env.CI ? 1 : undefined,   // CI: 1 worker (tuần tự) | local: Playwright tự chọn theo số CPU
+```
+
+| Giá trị `workers` | Nghĩa |
+|---|---|
+| `1` | Chạy tuần tự từng test (hiện tại trên CI) |
+| `2`, `3`... | Số worker cố định |
+| `'50%'` | Theo phần trăm số nhân CPU của máy |
+| `undefined` | Mặc định của Playwright (khoảng một nửa số nhân CPU) — đang dùng ở local |
+
+Máy CI `ubuntu-latest` cho repo public có 4 vCPU → nếu tăng thì **2 worker là mức khởi đầu an toàn**; 4 worker dễ làm máy quá tải khi chạy cả 3 browser.
+
+### 19.2 Bẫy chính: dữ liệu test trùng nhau khi chạy song song
+
+Username/email đang sinh bằng `Date.now()` (thời gian tính theo **mili-giây**):
+
+```ts
+// src/utils/random-data.util.ts
+return `${prefix}-${Date.now()}`;              // E101-tuyen-1791704015141
+// tests/dashboard/users/add-user.spec.ts (5 chỗ)
+const testUserName = `dup-${Date.now()}`;
+```
+
+```
+1 worker:   test A gọi Date.now() ── (vài giây sau) ── test B gọi Date.now()   → luôn khác nhau ✅
+
+2 worker:   worker 1: test A gọi Date.now() = 1791704015141
+            worker 2: test B gọi Date.now() = 1791704015141   ← CÙNG mili-giây!
+            → 2 test tạo cùng username → test sau nhận lỗi "This username is already registered" ❌
+```
+
+Đây chính là kiểu **lỗi flaky** rất khó điều tra: hiếm khi xảy ra, và thông báo lỗi trông như lỗi nghiệp vụ.
+
+**Cách sửa (khi muốn tăng worker):** ghép thêm phần ngẫu nhiên, đặt trong `utils/` đúng nguyên tắc bọc thư viện:
+
+```ts
+// src/utils/random-data.util.ts
+export function uniqueSuffix(): string {
+    return `${Date.now()}-${faker.string.alphanumeric(4)}`;   // VD: 1791704015141-x7Kq
+}
+
+export function randomUserName(prefix: string = 'E101-tuyen'): string {
+    return `${prefix}-${uniqueSuffix()}`;
+}
+// randomEmail tương tự; 5 chỗ `dup-${Date.now()}` trong add-user.spec.ts đổi thành `dup-${uniqueSuffix()}`
+```
+
+### 19.3 Các yếu tố khác đã kiểm tra
+
+| Yếu tố | Đánh giá |
+|---|---|
+| Nhiều worker cùng login **một tài khoản admin** | ✅ WordPress cho phép nhiều phiên đăng nhập cùng lúc; mỗi worker có trình duyệt riêng, logout ở worker này chỉ hủy phiên của chính nó |
+| `afterEach` tìm và xóa user | ✅ Tìm theo đúng username vừa tạo — với username duy nhất thì không xóa nhầm user của worker khác |
+| Các lỗi timing (zxcvbn, focus, hover) | ✅ Đã xử lý bằng **chờ dấu hiệu sẵn sàng** — không phụ thuộc tốc độ, nên vẫn đúng khi máy chậm hơn do chạy song song |
+| Tải lên website practice (site dùng chung) | ⚠️ Request song song gấp đôi → site có thể phản hồi chậm hơn → nên tăng dần và quan sát |
+
+### 19.4 Đánh đổi
+
+| | 1 worker (đang dùng) | 2 worker |
+|---|---|---|
+| Thời gian chạy `all` (78 test) | ~18 phút | ước tính ~9–11 phút |
+| Thời gian chạy chromium (26 test) | ~5–7 phút | ước tính ~3–4 phút |
+| Điều kiện | Không cần gì thêm | Phải sửa dữ liệu test cho duy nhất (19.2) |
+| Rủi ro | Thấp nhất | Site chịu tải gấp đôi; cần chạy CI vài lần để kiểm tra |
+
+**Nếu sau này muốn tăng worker**, làm theo thứ tự:
+1. Thêm `uniqueSuffix()` + sửa 5 chỗ trong `add-user.spec.ts`.
+2. Đổi `workers: process.env.CI ? 2 : undefined`.
+3. `npm run typecheck` + chạy thử local.
+4. Commit, push, chạy tay CI `all` 2–3 lần.
+5. Cập nhật [04-utils-design.md](../project-documentations/04-utils-design.md) và phần CI trong README.
+
+> **Bài học:** tăng tốc độ bằng chạy song song **không chỉ là đổi một con số**. Phải rà lại mọi thứ mà các test **dùng chung** (dữ liệu, tài khoản, website) — thứ gì "chỉ đúng khi chạy tuần tự" sẽ thành lỗi flaky khi chạy song song.
