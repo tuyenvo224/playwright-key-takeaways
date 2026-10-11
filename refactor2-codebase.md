@@ -53,6 +53,10 @@ Các việc đã làm, theo thứ tự thời gian:
 | 13 | Phát hiện nguyên nhân gốc: WordPress **giành focus** khi đang `fill` | `fillAndVerify()` + `login()` kiểm tra cả form |
 | 14 | CI mặc định chỉ chạy chromium, chạy tay được đủ 3 browser | `workflow_dispatch` trong `playwright.yml` + README |
 | 15 | Cập nhật tài liệu | `01-website-feature.md` thêm mục 1.4 và mục 4 (timing) |
+| 16 | Commit bản fix (`ee78d77`), chạy tay CI với `all` | **Vẫn fail**: 8 test Add User trên firefox, 6 trên webkit — dù local đã pass |
+| 17 | Phân tích report lần 2: đo thời điểm trên 14 trace + đọc mã nguồn `user-profile.js` | Tìm ra **nguyên nhân gốc**: form chỉ sẵn sàng khi `zxcvbn.min.js` tải xong |
+| 18 | Thêm `waitForAddUserFormReady()` (chờ ô Password có giá trị), override `clickAddUserTab()` | Commit `e86bb67` — ⏳ chờ xác nhận trên CI |
+| 19 | Cập nhật `01-website-feature.md` + file ghi chú này theo nguyên nhân đầy đủ | |
 
 **Quy tắc làm việc của dự án** (trong [AGENTS.md](../AGENTS.md)): luôn trình bày những việc sẽ làm, **chờ xác nhận** rồi mới bắt đầu. Đó là lý do mỗi yêu cầu trong session đều có một bước "kế hoạch → bạn duyệt → thực hiện".
 
@@ -587,12 +591,20 @@ Lúc này chỉ có **giả thuyết** (khác biệt riêng của Firefox, hoặ
 
 | Lỗi | Nguyên nhân thật | Đã sửa bằng |
 |---|---|---|
-| 7 test Add User fail (Firefox) | Form **không được gửi đi** — vì WordPress **giành focus** về ô Password đúng lúc đang `fill`, chữ bị chèn nhầm ô, ô Username bắt buộc bị trống | `fillAndVerify()` + `waitForPageLoad()` |
-| `add-user.spec.ts:127` flaky (Firefox) | Cùng nguyên nhân trên (lần 3 may mắn không bị giành focus) | Như trên |
+| 7 test Add User fail (Firefox) — và 8 test firefox + 6 test webkit ở lần chạy tay `all` | **Gốc:** form Add User chỉ khởi tạo xong khi `zxcvbn.min.js` (~400KB, tải **sau** `load`) tải xong. Test thao tác trước thời điểm đó → 2 hệ quả: (a) **chữ bị điền nhầm ô** (WordPress giành focus về ô Password), (b) **bấm submit mà form không được gửi đi** | `waitForAddUserFormReady()` (chờ ô Password có giá trị) — ⏳ chờ xác nhận CI. `fillAndVerify()` giữ làm lớp bảo vệ thêm |
+| `add-user.spec.ts:127` flaky (Firefox) | Cùng nguyên nhân trên (lần retry may mắn: zxcvbn tải xong kịp) | Như trên |
 | `account-permissions` flaky (WebKit) | Menu Log Out mở bằng hover có độ trễ, click hụt rồi chờ mãi | `logout()` với `mouse.move` + `toPass()` |
 | (Phát hiện thêm khi chạy local) Login lại trong `afterEach` fail | Trang login tự focus ô Username, mật khẩu đè vào ô Username | `login()` kiểm tra cả form |
 
-> **Bài học về điều tra lỗi:** lần phân tích đầu tiên kết luận *"form không được gửi đi vì JS chưa khởi tạo xong"* — **hiện tượng** thì đúng (không có request POST), nhưng **lý do** chưa đúng hẳn. Chỉ khi có thêm bằng chứng mới (snapshot cho thấy username bị nối vào ô Password) mới tìm ra nguyên nhân gốc là giành focus. Vì vậy: luôn phân biệt rõ **"đã xác nhận"** với **"đang nghi ngờ"**, và sẵn sàng điều chỉnh kết luận khi có bằng chứng mới.
+> **Bài học về điều tra lỗi:** cùng một lỗi Add User, kết luận đã được điều chỉnh **3 lần**:
+>
+> | Lần | Bằng chứng có được | Kết luận lúc đó | Đánh giá sau cùng |
+> |---|---|---|---|
+> | 1 | Trace: không có request POST | "Form không được gửi đi vì JS chưa khởi tạo xong" → sửa bằng `waitForPageLoad()` | Hiện tượng đúng, cách sửa chưa đủ |
+> | 2 | Snapshot: username bị nối vào ô Password | "WordPress giành focus khi đang fill" → sửa bằng `fillAndVerify()` | Đúng nhưng chỉ là **một hệ quả** |
+> | 3 | Các ô đã đúng mà vẫn không POST; đo 14/14 trace + đọc mã nguồn `user-profile.js` | "Form chỉ sẵn sàng khi zxcvbn tải xong" → sửa bằng `waitForAddUserFormReady()` | **Nguyên nhân gốc** — giải thích được cả 2 hệ quả |
+>
+> Vì vậy: luôn phân biệt rõ **"đã xác nhận"** với **"đang nghi ngờ"**; một cách sửa làm hết lỗi **ở local** chưa chắc đã chạm tới nguyên nhân gốc; và sẵn sàng điều chỉnh kết luận khi có bằng chứng mới.
 
 ### 9.4 Cách điều tra test fail trên CI
 
@@ -666,17 +678,19 @@ Ngoài lệnh, cần tự kiểm tra:
 
 | Việc | Cách giải quyết |
 |---|---|
-| ~~7 test Firefox fail trong `add-user.spec.ts`~~ | Tìm ra nguyên nhân giành focus → `fillAndVerify()` ([mục 13.3](#133-lỗi-1--trang-add-user-form-không-được-gửi-đi)) |
+| ~~7 test Firefox fail trong `add-user.spec.ts`~~ | Tìm ra nguyên nhân gốc (zxcvbn) → `waitForAddUserFormReady()` + `fillAndVerify()` ([mục 13.3](#133-lỗi-1--trang-add-user-form-chỉ-sẵn-sàng-khi-zxcvbn-tải-xong)) — ⏳ chờ xác nhận CI |
 | ~~3 test flaky~~ | `fillAndVerify()`, `logout()` mới, timeout 60s ([mục 13](#13-race-condition-và-3-lỗi-flaky-đã-sửa)) |
 | ~~Tăng tốc CI~~ | Push/PR chỉ chạy chromium, chạy tay được `all` ([mục 15](#15-ci-chọn-browser-và-chạy-tay)) |
+| ~~Commit & push bản fix flaky + CI chọn browser~~ | Commit `ee78d77` |
+| ~~`clickAddUserTab()` chưa chờ form sẵn sàng~~ | Override trong `UserPage`, gọi `waitForAddUserFormReady()` (commit `e86bb67`) |
 
 ### Còn lại
 
 | # | Việc | Mức độ | Ghi chú |
 |---|---|---|---|
-| 1 | **Commit & push** bản fix flaky + CI chọn browser | 🔴 Cao | Đang ở trạng thái chưa commit (10 file sửa) |
-| 2 | Kiểm tra **user test bị sót** trên site | 🟠 Trung bình | Từ các lần `afterEach` bị cắt giữa chừng — tìm `tuyen-` trong Users |
-| 3 | `clickAddUserTab()` chưa có `waitForPageLoad()` | 🟡 Thấp | Chưa gây lỗi (chỉ dùng kiểm tra heading), nhưng nên thêm cho đồng bộ với `clickAddUserButton()` |
+| 1 | **Xác nhận bản sửa zxcvbn trên CI** | 🔴 Cao | Tab Actions → Run workflow → `all`, chạy 2–3 lần. Lỗi phụ thuộc tốc độ mạng của máy CI nên local pass không đủ để kết luận |
+| 2 | Kiểm tra **user test bị sót** trên site | 🟠 Trung bình | Từ các lần `afterEach` bị cắt giữa chừng hoặc test fail — tìm `tuyen-` trong Users |
+| 3 | Xem lại việc **repo public** làm lộ mật khẩu qua trace trong artifact | 🟠 Trung bình | Trace ghi nguyên văn giá trị `fill()`, kể cả mật khẩu admin; GitHub không che secrets bên trong artifact. Hướng: chuyển repo private, xóa artifact cũ, tắt trace trên CI, hoặc đổi mật khẩu |
 | 4 | `tests/storefront/home.spec.ts:14` vẫn hardcode URL | 🟡 Thấp | Đề xuất: `toHaveURL(/^https?:\/\/[^/]+\/$/)` ([mục 6](#6-viết-assertion-đúng--tránh-assertion-luôn-pass)) |
 | 5 | Text `"... - Dev environment"` gắn với môi trường dev | 🟡 Thấp | Cần xem lại nếu chạy trên môi trường khác |
 | 6 | ~34 dòng code cũ để dạng comment (`//await ...`) | ⚪ Tùy chọn | Trong fixture, `add-user.page.ts`, `login.page.ts`, các file test — gồm cả bản cũ của `login()`, `hoverProfile()/clickLogout()`. Có git lưu lịch sử rồi nên có thể xóa cho gọn |
@@ -753,7 +767,30 @@ TEST FAIL (username & email only)                 TEST PASS (@ACC_002)
 5. ĐIỀU CHỈNH     Còn fail? → có bằng chứng mới → quay lại bước 2, sẵn sàng sửa giả thuyết
 ```
 
-Trong session đã đi qua vòng lặp này **3 lần**: lần 1 tìm ra "form không được gửi" → sửa `waitForPageLoad` → vẫn fail → lần 2 snapshot mới cho thấy "chữ vào nhầm ô" → tìm ra giành focus → sửa `fillAndVerify` → ổn.
+Trong session, lỗi Add User đã đi qua vòng lặp này **3 lần** (chi tiết ở bảng "Bài học" trong [mục 9.3](#93-đọc-ra-được-gì-từ-kết-quả--và-kết-luận-cuối-cùng)):
+
+```
+Vòng 1: không có POST          → waitForPageLoad()          → vẫn fail (local Firefox)
+Vòng 2: chữ bị nối vào Password → fillAndVerify()            → local pass ✅, nhưng CI vẫn fail ❌
+Vòng 3: ô đã đúng mà vẫn không POST → đo timing + đọc mã nguồn → waitForAddUserFormReady()
+```
+
+### 12.5 Hai kỹ thuật điều tra dùng ở vòng 3
+
+**(1) Đo thời điểm trên NHIỀU trace, không chỉ một.** Một trace chỉ cho thấy "chuyện gì đã xảy ra lần này". So sánh thời điểm giữa các sự kiện trên **tất cả** lần fail mới lộ ra quy luật:
+
+| | zxcvbn tải mất | Bấm "Add User" so với lúc zxcvbn tải xong |
+|---|---|---|
+| Firefox (8 test) | 209–418ms | sớm hơn 80–292ms |
+| WebKit (6 test) | 635–870ms | sớm hơn 484–762ms |
+
+**14/14** lần fail đều bấm submit **trước** khi zxcvbn tải xong → không thể là trùng hợp.
+
+Một chi tiết nhỏ nhưng quan trọng: trong trace, `waitForPageLoad()` trả về **đúng cùng mili-giây** với lúc request `zxcvbn.min.js` bắt đầu → chứng minh chờ `load` không bao giờ đủ.
+
+**(2) Đọc mã nguồn JavaScript của chính trang đang test.** File JS của WordPress là tài nguyên tĩnh công khai, tải về đọc được (đúng phiên bản `?ver=7.0.7` mà trang đang dùng). Đọc `user-profile.js` thấy ngay `generatePassword()` chờ zxcvbn rồi mới điền mật khẩu + focus — xác nhận cả **thứ tự khởi tạo** lẫn **thủ phạm giành focus** ở vòng 2. Đọc mã nguồn còn giúp tìm ra **dấu hiệu để chờ** (ô Password có giá trị).
+
+**Giới hạn cần nói rõ:** đã xác nhận chắc chắn về **thời điểm** (14/14) và **thứ tự khởi tạo** (mã nguồn). Còn chính xác dòng code nào chặn submit khi form chưa khởi tạo thì **chưa xác định được 100%** — trace không ghi lại JS chạy bên trong trình duyệt. Cách sửa nhắm vào điều đã xác nhận (chờ khởi tạo xong), nên vẫn đúng dù chưa biết chi tiết cuối cùng đó.
 
 ---
 
@@ -787,24 +824,78 @@ locator.fill("abc")
 
 Nếu giữa bước 1 và bước 2, JS của trang chuyển focus sang ô khác → **chữ bị chèn vào ô khác**. Đây là gốc rễ của lỗi 1 và lỗi 2.
 
-### 13.3 Lỗi 1 — Trang Add User: form không được gửi đi
+### 13.3 Lỗi 1 — Trang Add User: form chỉ sẵn sàng khi zxcvbn tải xong
 
-**Hiện tượng:** 7 test Add User fail trên Firefox — bấm "Add User" nhưng không có message nào (cả thành công lẫn lỗi).
+**Hiện tượng:** test Add User fail trên Firefox/WebKit chạy CI — bấm "Add User" nhưng không có message nào (cả thành công lẫn lỗi), trace **không có request POST**. Ở local lại pass.
 
-**Nguyên nhân (2 tầng):**
+#### Nguyên nhân gốc
 
-1. **Trang tải rất nhiều JavaScript** (hơn 60 file: React, block-editor, `user-profile.js`...). `click()` vào link chỉ chờ trang **bắt đầu** tải → test thao tác khi JS chưa khởi tạo xong.
-2. **`user-profile.js` focus vào ô Password** (ô có mật khẩu tự sinh) khi khởi tạo → nếu đang `fill` ô Username, chữ bị **nối vào cuối mật khẩu**, ô Username **trống** → thiếu ô bắt buộc → form không được gửi.
+Trang `user-new.php` tải hơn 60 file JS. Riêng **`zxcvbn.min.js`** (thư viện đo độ mạnh mật khẩu, ~400KB) được tải theo kiểu `zxcvbn-async`: WordPress chỉ **bắt đầu** tải nó **sau** sự kiện `load`. Form chỉ khởi tạo xong khi file này tải xong — mã nguồn `wp-admin/js/user-profile.js`:
 
-**Cách sửa:**
+```js
+function generatePassword() {
+    if ( typeof zxcvbn !== 'function' ) {
+        setTimeout( generatePassword, 50 );   // zxcvbn chưa tải -> chờ 50ms thử lại, form CHƯA khởi tạo
+        return;
+    }
+    $pass1.val( $pass1.data( 'pw' ) );        // zxcvbn tải xong -> điền mật khẩu tự sinh vào ô Password
+    ...
+    $( $pass1 ).trigger( 'focus' );           // ... rồi FOCUS vào ô Password
+}
+```
+
+Dòng thời gian trên CI (Firefox):
+
+```
+click link "Add User" ─► trang tải ─► sự kiện 'load' ─► bắt đầu tải zxcvbn (~200–870ms) ─► generatePassword(): điền mật khẩu + focus
+                                          ▲                                                    ▲
+                           waitForPageLoad() trả về ở đây                       form chỉ SẴN SÀNG từ đây
+                                          │◄──────── test fill + bấm submit rơi vào khoảng này ──►│
+```
+
+#### Hai hệ quả của cùng một nguyên nhân
+
+| Thao tác rơi vào lúc | Hậu quả | Phát hiện ở vòng |
+|---|---|---|
+| Đang `fill` **đúng lúc** `generatePassword()` chạy | Focus bị kéo sang ô Password → chữ **nối vào cuối mật khẩu**, ô đang điền **trống** | Vòng 2 (snapshot) |
+| Bấm "Add User" **trước khi** `generatePassword()` chạy | **Form không được gửi đi** dù các ô đã đúng | Vòng 3 (đo timing 14/14) |
+
+#### Vì sao local pass mà CI fail?
+
+Máy CI của GitHub đặt ở nước ngoài, cấu hình yếu → tải zxcvbn mất 200–870ms. Máy local tải nhanh hơn nhiều → lúc test kịp bấm submit thì zxcvbn thường đã tải xong. Lỗi **vẫn tồn tại ở local** nhưng gần như không bao giờ rơi trúng.
+
+> **Bài học:** "chạy local pass" **không** chứng minh lỗi timing đã hết. Sau vòng 2, local đã pass hoàn toàn — nhưng CI vẫn fail vì mới chặn được **một hệ quả**, chưa chạm tới **nguyên nhân gốc**.
+
+#### Cách sửa
 
 ```ts
-// add-user.page.ts — chờ trang tải xong sau khi mở form
+// add-user.page.ts
 async clickAddUserButton() {
     await this.addUserButtonLoc.click();
-    await this.waitForPageLoad();   // chờ sự kiện 'load'
+    await this.waitForAddUserFormReady();
 }
 
+// Override clickAddUserTab() của DashboardBasePage: vào form qua submenu cũng phải chờ form sẵn sàng.
+async clickAddUserTab() {
+    await super.clickAddUserTab();
+    await this.waitForAddUserFormReady();
+}
+
+async waitForAddUserFormReady() {
+    await this.waitForPageLoad();
+    await expect(this.passwordTextBoxLoc).not.toHaveValue('');   // ô Password đã có mật khẩu tự sinh
+}
+```
+
+**Vì sao một điều kiện chờ chặn được cả 2 hệ quả?** Trong `generatePassword()`, việc điền mật khẩu và focus chạy **liền nhau trong cùng một lần**. Khi Playwright thấy ô Password có giá trị thì focus cũng đã chuyển xong → không còn gì giành focus nữa, và form đã sẵn sàng để submit.
+
+**Vì sao chờ "ô Password có giá trị" mà không chờ "file zxcvbn tải xong"?** Vì đó là **dấu hiệu nhìn thấy được trên giao diện** — đúng tinh thần Playwright (kiểm tra cái người dùng thấy), không phụ thuộc chi tiết kỹ thuật bên trong (tên file, cách tải). `expect(...).not.toHaveValue('')` tự thử lại tối đa 5s — dư cho mức chậm nhất đã đo (870ms).
+
+**Override là gì?** `clickAddUserTab()` gốc nằm ở `DashboardBasePage` — lớp này không có `passwordTextBoxLoc` nên không gọi được `waitForAddUserFormReady()`. Viết lại method **cùng tên** trong `UserPage`: `super.clickAddUserTab()` chạy bản gốc (click submenu), rồi chờ form. Test gọi `userPage.clickAddUserTab()` tự động dùng bản của `UserPage` — không phải sửa file test.
+
+**Lớp bảo vệ thêm — `fillAndVerify()`** (giữ lại từ vòng 2):
+
+```ts
 // base.page.ts — điền xong phải kiểm tra, sai thì điền lại
 async fillAndVerify(locator: Locator, value: string) {
     await expect(async () => {
@@ -812,19 +903,12 @@ async fillAndVerify(locator: Locator, value: string) {
         await expect(locator).toHaveValue(value, { timeout: 1000 });
     }).toPass({ timeout: 10000 });
 }
-
-// add-user.page.ts — mọi hàm điền form dùng fillAndVerify
-async fillUserName(userName: string) {
-    await this.fillAndVerify(this.userNameTextboxLoc, userName);
-}
-// tương tự: fillEmail, fillFirstName, fillLastName, fillPassword
+// add-user.page.ts: fillUserName / fillEmail / fillFirstName / fillLastName / fillPassword đều dùng fillAndVerify
 ```
 
-**Vì sao `waitForPageLoad()` thôi là chưa đủ?** Lần sửa đầu chỉ thêm `waitForPageLoad()` → vẫn fail. Vì JS của WordPress giành focus **sau** sự kiện `load` (qua `setTimeout`/khởi tạo muộn). "Trang đã load" ≠ "trang đã đứng yên".
+**Ô Password bị nối thêm chữ có sao không?** Không: test không điền Password thì không quan tâm mật khẩu là gì; test có điền thì `fillPassword()` dùng `fill()` **ghi đè toàn bộ** ô.
 
-**Ô Password bị nối thêm chữ có sao không?** Không:
-- Test không điền Password → không quan tâm mật khẩu là gì.
-- Test có điền Password → `fillPassword()` gọi sau cùng, `fill()` **ghi đè toàn bộ** ô.
+**Trạng thái:** ⏳ commit `e86bb67` đang chờ xác nhận trên CI với cả 3 browser (chạy tay `all`, 2–3 lần).
 
 ### 13.4 Lỗi 2 — Trang login: mật khẩu đè vào ô Username
 
@@ -946,11 +1030,12 @@ await expect(async () => {
 
 ### 13.8 Nguyên tắc chung (đã ghi vào [01-website-feature.md §4](../project-documentations/01-website-feature.md#4-lưu-ý-chung-về-timing-race-condition))
 
-1. Thao tác xong phải **kiểm tra kết quả thật**, sai thì **thử lại** bằng `toPass()` — không giả định thao tác luôn thành công.
-2. Thử lại **từ bước tạo ra trạng thái cần thiết** + timeout ngắn cho từng thao tác bên trong.
-3. Form nhiều ô rồi submit → kiểm tra **trạng thái cuối cùng của cả form** nếu các ô có thể làm hỏng nhau.
-4. **Không** dùng `page.waitForTimeout(3000)` (chờ cố định): máy nhanh thì phí thời gian, máy chậm thì vẫn có thể chưa đủ.
-5. Bọc cách xử lý trong **POM** (`login()`, `logout()`, `fillAndVerify()`) → mọi test tự động được bảo vệ, không phải sửa từng file test.
+1. Trước khi thao tác, chờ **dấu hiệu nhìn thấy được** cho biết JS của trang đã khởi tạo xong (VD: ô Password có mật khẩu tự sinh) — **không chỉ chờ `load`**. Tìm dấu hiệu bằng cách đọc mã nguồn JS của trang hoặc quan sát trace.
+2. Thao tác xong phải **kiểm tra kết quả thật**, sai thì **thử lại** bằng `toPass()` — không giả định thao tác luôn thành công.
+3. Thử lại **từ bước tạo ra trạng thái cần thiết** + timeout ngắn cho từng thao tác bên trong.
+4. Form nhiều ô rồi submit → kiểm tra **trạng thái cuối cùng của cả form** nếu các ô có thể làm hỏng nhau.
+5. **Không** dùng `page.waitForTimeout(3000)` (chờ cố định): máy nhanh thì phí thời gian, máy chậm thì vẫn có thể chưa đủ.
+6. Bọc cách xử lý trong **POM** (`login()`, `logout()`, `fillAndVerify()`) → mọi test tự động được bảo vệ, không phải sửa từng file test.
 
 ---
 
