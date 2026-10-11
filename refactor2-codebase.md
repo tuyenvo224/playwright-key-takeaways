@@ -1,12 +1,14 @@
 # Tổng hợp kiến thức — Session refactor & CI
 
-> Ghi chú học tập tổng hợp lại toàn bộ những gì đã làm, đã phân tích và đã học được trong session làm việc với dự án `playwright-automation-framework`: từ đổi tên dự án, refactor cấu trúc, cập nhật tài liệu, cho tới commit/push và đọc kết quả CI trên GitHub Actions.
+> Ghi chú học tập tổng hợp lại toàn bộ những gì đã làm, đã phân tích và đã học được trong session làm việc với dự án `playwright-automation-framework`: từ đổi tên dự án, refactor cấu trúc, cập nhật tài liệu, commit/push, đọc kết quả CI, cho tới điều tra và sửa các lỗi flaky (race condition) và cấu hình CI chọn browser.
 >
 > Tài liệu **thiết kế** chính thức của dự án vẫn nằm ở [project-documentations/](../project-documentations/). File này là ghi chú để ôn lại và tra cứu.
 
 ---
 
 ## Mục lục
+
+**Phần 1 — Refactor, tài liệu, commit**
 
 1. [Tổng quan session](#1-tổng-quan-session)
 2. [Đổi tên dự án](#2-đổi-tên-dự-án)
@@ -15,10 +17,18 @@
 5. [Biến môi trường: `.env`, `.env.example`, `dotenv`](#5-biến-môi-trường-env-envexample-dotenv)
 6. [Viết assertion đúng — tránh assertion "luôn pass"](#6-viết-assertion-đúng--tránh-assertion-luôn-pass)
 7. [Git: add, commit, push và upstream](#7-git-add-commit-push-và-upstream)
+
+**Phần 2 — CI và xử lý lỗi**
+
 8. [GitHub Actions (CI)](#8-github-actions-ci)
 9. [Đọc kết quả CI](#9-đọc-kết-quả-ci)
 10. [Checklist review trước khi commit](#10-checklist-review-trước-khi-commit)
 11. [Việc còn tồn đọng](#11-việc-còn-tồn-đọng)
+12. [Điều tra test fail bằng HTML report và trace](#12-điều-tra-test-fail-bằng-html-report-và-trace)
+13. [Race condition và 3 lỗi flaky đã sửa](#13-race-condition-và-3-lỗi-flaky-đã-sửa) ⭐ quan trọng nhất
+14. [Timeout trong Playwright](#14-timeout-trong-playwright)
+15. [CI chọn browser và chạy tay](#15-ci-chọn-browser-và-chạy-tay)
+16. [GitHub CLI (`gh`)](#16-github-cli-gh)
 
 ---
 
@@ -33,8 +43,16 @@ Các việc đã làm, theo thứ tự thời gian:
 | 3 | Sửa README: `BASE_URL` dùng placeholder thay vì URL thật | Đồng nhất với 2 biến còn lại |
 | 4 | Review các lần refactor tiếp theo (xóa file login test cũ, đổi tên class, thêm `readonly`, sửa `.env.example`) | Cập nhật `03-pom-design.md` |
 | 5 | Cấu hình CI: truyền 3 secrets vào bước chạy test, thêm bước typecheck | Sửa `playwright.yml` + phần CI trong README |
-| 6 | Review toàn bộ trước khi commit | Không có lỗi chặn → commit & push |
-| 7 | Đọc kết quả CI lần chạy đầu | 68 passed, 3 flaky, 7 failed (Firefox) — chưa tìm ra nguyên nhân |
+| 6 | Review toàn bộ trước khi commit | Không có lỗi chặn → commit & push (`7637d20`) |
+| 7 | Đọc kết quả CI lần chạy đầu | 68 passed, 3 flaky, 7 failed (Firefox) |
+| 8 | Tìm hiểu GitHub CLI (`gh`) | Máy công ty không cài được (cần quyền admin) → tiếp tục làm trên web |
+| 9 | Tải report CI về `ci-report/`, phân tích error-context + trace | Tìm ra: form Add User **không được gửi đi** trên Firefox |
+| 10 | Sửa lỗi trang Add User tải nhiều JS | `waitForPageLoad()` sau khi mở form |
+| 11 | Sửa lỗi menu Log Out (hover) — lần 1 chưa đúng, lần 2 đúng | `logout()` = `mouse.move` + hover + click, bọc `toPass()` |
+| 12 | Tăng timeout cho test phân quyền | `test.describe.configure({ timeout: 60000 })` |
+| 13 | Phát hiện nguyên nhân gốc: WordPress **giành focus** khi đang `fill` | `fillAndVerify()` + `login()` kiểm tra cả form |
+| 14 | CI mặc định chỉ chạy chromium, chạy tay được đủ 3 browser | `workflow_dispatch` trong `playwright.yml` + README |
+| 15 | Cập nhật tài liệu | `01-website-feature.md` thêm mục 1.4 và mục 4 (timing) |
 
 **Quy tắc làm việc của dự án** (trong [AGENTS.md](../AGENTS.md)): luôn trình bày những việc sẽ làm, **chờ xác nhận** rồi mới bắt đầu. Đó là lý do mỗi yêu cầu trong session đều có một bước "kế hoạch → bạn duyệt → thực hiện".
 
@@ -115,9 +133,9 @@ Trang login là "cửa vào" khu vực admin nhưng **chưa thuộc** admin (ch�
 ### 3.5 Sơ đồ kế thừa mới
 
 ```
-BasePage                    (giữ page, đọc BASE_URL, goto(), waitForPageLoad(), getTitle())
+BasePage                    (giữ page, đọc BASE_URL, goto(), waitForPageLoad(), getTitle(), fillAndVerify())
  ├── LoginPage              (form login, login(), getErrorMessage())
- ├── DashboardBasePage      (menu sidebar, logout, heading Dashboard/At a Glance/Activity)
+ ├── DashboardBasePage      (menu sidebar, logout(), heading Dashboard/At a Glance/Activity)
  │    ├── HomePage
  │    ├── UpdatesPage
  │    ├── UserPage          (gộp Add User + All Users)
@@ -243,7 +261,7 @@ Trong session, `readonly` đã được bổ sung cho **toàn bộ** locator tro
 | `storeFrontPageLoc:string` | `storeFrontPageLoc: string` (có dấu cách sau `:`) |
 | Dấu cách thừa cuối dòng | Xóa |
 | `clickstoreFrontPage` | `clickStoreFrontPage` (camelCase) |
-
+| `StroreFrontHomePage` | `StoreFrontHomePage` (sai chính tả) |
 
 **Mẹo VS Code:** bật `"files.trimTrailingWhitespace": true` trong Settings để tự xóa dấu cách cuối dòng khi lưu file.
 
@@ -395,6 +413,10 @@ git check-ignore -v .env
 
 Nếu lệnh này không in ra gì nghĩa là `.env` **sẽ bị commit** → phải thêm vào `.gitignore` trước.
 
+Trong session, `.gitignore` còn được thêm:
+- `/ci-report/` — report tải từ CI về để điều tra, không cần đưa lên GitHub (nặng ~40MB, chứa trace có cả tài khoản admin dạng chữ rõ).
+- `/notes/` — file ghi chú cá nhân này.
+
 ### 7.4 Upstream là gì? (phần dễ nhầm nhất)
 
 **Tình huống:** bạn đã từng push lên GitHub, nhánh `main` đã có trên GitHub — vậy sao vẫn cần `-u`?
@@ -437,27 +459,31 @@ Nếu gặp lỗi **rejected / non-fast-forward**: trên GitHub có commit mà l
 
 ### 8.1 Workflow hiện tại
 
-File [.github/workflows/playwright.yml](../.github/workflows/playwright.yml), chạy khi push hoặc tạo Pull Request vào `main`/`master`:
+File [.github/workflows/playwright.yml](../.github/workflows/playwright.yml):
 
 ```yaml
-steps:
-- uses: actions/checkout@v4                 # 1. Lấy code về
-- uses: actions/setup-node@v4               # 2. Cài Node.js
-- name: Install dependencies
-  run: npm ci                               # 3. Cài dependency theo đúng package-lock.json
-- name: Type check
-  run: npm run typecheck                    # 4. Kiểm tra type  ← THÊM MỚI
-- name: Install Playwright Browsers
-  run: npx playwright install --with-deps   # 5. Cài 3 trình duyệt + thư viện hệ thống
-- name: Run Playwright tests
-  run: npx playwright test                  # 6. Chạy test
-  env:                                      #    ← THÊM MỚI
-    BASE_URL: ${{ secrets.BASE_URL }}
-    ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
-    ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-- uses: actions/upload-artifact@v4          # 7. Upload report HTML
-  if: ${{ !cancelled() }}                   #    chạy cả khi test fail
+on:
+  push:            { branches: [ main, master ] }     # tự chạy khi push
+  pull_request:    { branches: [ main, master ] }     # tự chạy khi tạo PR
+  workflow_dispatch:                                  # chạy tay từ tab Actions   ← MỚI
+    inputs:
+      browsers: { type: choice, options: [chromium, all], default: chromium }
+
+jobs:
+  test:
+    env:
+      BROWSERS: ${{ inputs.browsers || 'chromium' }}  # push/PR -> chromium   ← MỚI
+    steps:
+    - uses: actions/checkout@v4                       # 1. Lấy code về
+    - uses: actions/setup-node@v4                     # 2. Cài Node.js
+    - run: npm ci                                     # 3. Cài dependency theo đúng package-lock.json
+    - run: npm run typecheck                          # 4. Kiểm tra type
+    - run: ... cài chromium hoặc cả 3 browser          # 5. Theo BROWSERS              ← SỬA
+    - run: ... chạy --project=chromium hoặc tất cả     # 6. Theo BROWSERS + 3 secrets  ← SỬA
+    - uses: actions/upload-artifact@v4                # 7. Upload report HTML (kể cả khi fail)
 ```
+
+(Viết gọn để dễ nhìn — file thật dùng cú pháp YAML nhiều dòng. Chi tiết phần chọn browser xem [mục 15](#15-ci-chọn-browser-và-chạy-tay).)
 
 ### 8.2 `npm ci` khác `npm install` thế nào?
 
@@ -475,13 +501,14 @@ Trên CI **không có file `.env`** (vì nó không được commit). Giải ph�
 | `ADMIN_USERNAME` | tài khoản admin |
 | `ADMIN_PASSWORD` | mật khẩu admin |
 
-Hoặc dùng GitHub CLI (lệnh sẽ hỏi giá trị, không lưu vào lịch sử terminal):
+**Bước 2 — Truyền vào workflow:** khối `env:` ở bước "Run Playwright tests":
 
-```bash
-gh secret set BASE_URL
+```yaml
+env:
+  BASE_URL: ${{ secrets.BASE_URL }}
+  ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+  ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
 ```
-
-**Bước 2 — Truyền vào workflow:** khối `env:` ở bước "Run Playwright tests" (xem 8.1).
 
 **Vì sao code không cần sửa gì?**
 - Workflow đặt sẵn 3 biến vào `process.env`.
@@ -492,7 +519,7 @@ gh secret set BASE_URL
 **Lưu ý:**
 - Tên secret phải **trùng khớp chính xác** (chữ hoa, không dấu cách).
 - Khi dán giá trị, không để thừa dấu cách/dòng trống — đây là lỗi hay gặp nhất khiến login fail trên CI dù local chạy đúng.
-- Sau khi lưu, GitHub **không cho xem lại** giá trị, chỉ cho ghi đè.
+- Sau khi lưu, GitHub **không cho xem lại** giá trị, chỉ cho ghi đè. Trang Secrets chỉ hiện **tên** — nhìn danh sách tên chỉ xác nhận được "đã khai báo", không xác nhận được giá trị đúng. Cách chắc chắn nhất: xem lần chạy CI đầu tiên, test login pass = giá trị đúng.
 - GitHub tự che secret thành `***` trong log, nhưng đừng `console.log` chúng.
 - Pull Request từ **fork** không nhận được secrets → test cần login sẽ fail.
 
@@ -500,7 +527,7 @@ gh secret set BASE_URL
 
 Nguyên tắc **fail fast** — kiểm tra rẻ và nhanh chạy trước:
 - Typecheck: vài giây.
-- Cài 3 trình duyệt + thư viện: 1–2 phút.
+- Cài trình duyệt + thư viện: 1–2 phút.
 
 Nếu có lỗi type, job dừng ngay sau vài giây, không tốn thời gian tải browser.
 
@@ -527,9 +554,7 @@ Thêm vào đó: mỗi test đều login qua fixture, test về user còn tạo 
 
 **Trường hợp xấu nhất:** nếu login trên CI hỏng (ví dụ secret sai), gần như cả 78 test fail ở fixture → 78 × 3 lần × 30s ≈ hơn 1 giờ → bị cắt ở 60 phút. Khi thấy log đầy `✘` và `retry #1`, `retry #2` ngay ở fixture thì nên **Cancel workflow** sớm.
 
-**Hướng tăng tốc** (chưa áp dụng, cần cân nhắc):
-- Trên CI chỉ chạy chromium → giảm khoảng 3 lần thời gian.
-- Tăng `workers` lên 2 → cần cẩn thận vì các test dùng chung một tài khoản admin.
+**Đã áp dụng:** CI mặc định chỉ chạy chromium (26 test) — xem [mục 15](#15-ci-chọn-browser-và-chạy-tay). Hướng còn lại (chưa áp dụng): tăng `workers` lên 2 — cần cẩn thận vì các test dùng chung một tài khoản admin.
 
 ### 9.2 Ý nghĩa các trạng thái
 
@@ -549,22 +574,32 @@ Kết quả lần chạy đầu sau refactor:
 
 Chỉ cần còn test **failed** là bước "Run Playwright tests" trả về `exit code 1` → job đỏ.
 
-### 9.3 Đọc ra được gì từ kết quả
+### 9.3 Đọc ra được gì từ kết quả — và kết luận cuối cùng
 
+**Nhận xét ban đầu** (chỉ từ dòng tổng kết):
 1. **68 passed → secrets đúng.** Login qua fixture chạy được trên cả 3 trình duyệt. Nếu secret sai, gần như toàn bộ test đã fail.
 2. **7 failed đều là `[firefox]` trong `add-user.spec.ts`**, cùng test đó chromium và webkit đều pass.
 3. Các test fail **đứng liền nhau** trong file (dòng 142 → 287), ngay trước đó test ở dòng 127 bị flaky.
 
-**Hai hướng nghi ngờ** (⚠️ **chưa có kết luận** — cần xem thông báo lỗi cụ thể):
-- Khác biệt riêng của Firefox với form Add User (cách xử lý ô Email, ô Password tự sinh, hoặc khoảng trắng/xuống dòng trong message không khớp `getByText(...)`).
-- Website practice bị chậm/chặn request trong khoảng thời gian đó, lỗi kéo dài sang các test liền sau.
+Lúc này chỉ có **giả thuyết** (khác biệt riêng của Firefox, hoặc website chậm) — chưa đủ bằng chứng để kết luận.
+
+**Kết luận sau khi điều tra** (chi tiết cách điều tra ở [mục 12](#12-điều-tra-test-fail-bằng-html-report-và-trace), cơ chế và cách sửa ở [mục 13](#13-race-condition-và-3-lỗi-flaky-đã-sửa)):
+
+| Lỗi | Nguyên nhân thật | Đã sửa bằng |
+|---|---|---|
+| 7 test Add User fail (Firefox) | Form **không được gửi đi** — vì WordPress **giành focus** về ô Password đúng lúc đang `fill`, chữ bị chèn nhầm ô, ô Username bắt buộc bị trống | `fillAndVerify()` + `waitForPageLoad()` |
+| `add-user.spec.ts:127` flaky (Firefox) | Cùng nguyên nhân trên (lần 3 may mắn không bị giành focus) | Như trên |
+| `account-permissions` flaky (WebKit) | Menu Log Out mở bằng hover có độ trễ, click hụt rồi chờ mãi | `logout()` với `mouse.move` + `toPass()` |
+| (Phát hiện thêm khi chạy local) Login lại trong `afterEach` fail | Trang login tự focus ô Username, mật khẩu đè vào ô Username | `login()` kiểm tra cả form |
+
+> **Bài học về điều tra lỗi:** lần phân tích đầu tiên kết luận *"form không được gửi đi vì JS chưa khởi tạo xong"* — **hiện tượng** thì đúng (không có request POST), nhưng **lý do** chưa đúng hẳn. Chỉ khi có thêm bằng chứng mới (snapshot cho thấy username bị nối vào ô Password) mới tìm ra nguyên nhân gốc là giành focus. Vì vậy: luôn phân biệt rõ **"đã xác nhận"** với **"đang nghi ngờ"**, và sẵn sàng điều chỉnh kết luận khi có bằng chứng mới.
 
 ### 9.4 Cách điều tra test fail trên CI
 
 **Cách A — Tải report từ CI** (khuyên dùng, vì dùng đúng lỗi đã xảy ra):
 
 1. Mở lần chạy → cuối trang, mục **Artifacts** → tải `playwright-report`.
-2. Giải nén vào một thư mục, ví dụ `ci-report/`.
+2. Giải nén vào một thư mục, ví dụ `ci-report/` (nhớ thêm vào `.gitignore`).
 3. Chạy:
    ```bash
    npx playwright show-report ci-report
@@ -589,8 +624,8 @@ Các bước đã dùng trong session, có thể tự chạy lại:
 # 1. Xem tổng quan thay đổi
 git status --short
 
-# 2. Chắc chắn .env không bị commit
-git check-ignore -v .env
+# 2. Chắc chắn .env (và ci-report/) không bị commit
+git check-ignore -v .env ci-report
 
 # 3. Không lỗi TypeScript
 npm run typecheck
@@ -606,24 +641,509 @@ grep -rn "pom/\|'\.\./\.\./\.\./" src tests
 
 # 7. Không có mật khẩu/URL hardcode ngoài ý muốn
 grep -rnE "https?://" src tests
+
+# 8. (Khi sửa lỗi flaky) chạy lặp nhiều lần trên browser hay lỗi — thao tác trên site thật!
+npx playwright test tests/dashboard/users --project=firefox --repeat-each=3
+
+# 9. (Trước khi merge thay đổi lớn) chạy đủ 3 browser — vì CI push/PR chỉ chạy chromium
+npx playwright test
 ```
 
 Ngoài lệnh, cần tự kiểm tra:
 - [ ] Các file bị xóa (` D`) đều là cấu trúc cũ đã được chuyển đi, không xóa nhầm.
-- [ ] Document (README, `project-documentations/`) khớp với code: cây thư mục, tên class, số dòng tham chiếu, code mẫu, link.
+- [ ] Document (README, `project-documentations/`) khớp với code: cây thư mục, tên class, số dòng tham chiếu, code mẫu, link. **Đối chiếu với code thật, không với ý định** — trong session từng ghi nhầm "`clickAddUserTab()` có chờ `load`" trong khi thực tế là `clickUserTab()`.
 - [ ] Không có tên cũ/sai chính tả còn sót trong document.
 - [ ] Assertion trong test thực sự fail được khi hành động không xảy ra (xem [mục 6](#6-viết-assertion-đúng--tránh-assertion-luôn-pass)).
+- [ ] Sau các lần test fail giữa chừng: vào **Users** trên site, tìm user test còn sót (email dạng `tuyen-<số>@gmail.com`) và xóa.
+
+**Về "flaky":** chạy pass **1 lần** chưa chứng minh được đã hết lỗi flaky — vì lỗi vốn chỉ thỉnh thoảng xảy ra. Cần chạy lặp (`--repeat-each`) và theo dõi thêm vài lần chạy CI.
 
 ---
 
 ## 11. Việc còn tồn đọng
 
+### Đã xong
+
+| Việc | Cách giải quyết |
+|---|---|
+| ~~7 test Firefox fail trong `add-user.spec.ts`~~ | Tìm ra nguyên nhân giành focus → `fillAndVerify()` ([mục 13.3](#133-lỗi-1--trang-add-user-form-không-được-gửi-đi)) |
+| ~~3 test flaky~~ | `fillAndVerify()`, `logout()` mới, timeout 60s ([mục 13](#13-race-condition-và-3-lỗi-flaky-đã-sửa)) |
+| ~~Tăng tốc CI~~ | Push/PR chỉ chạy chromium, chạy tay được `all` ([mục 15](#15-ci-chọn-browser-và-chạy-tay)) |
+
+### Còn lại
+
 | # | Việc | Mức độ | Ghi chú |
 |---|---|---|---|
-| 1 | Tìm nguyên nhân **7 test Firefox fail** trong `add-user.spec.ts` | 🔴 Cao | Xem [9.4](#94-cách-điều-tra-test-fail-trên-ci) — tải report CI, xem lỗi + trace |
-| 2 | Xử lý **3 test flaky** | 🟠 Trung bình | `account-permissions.spec.ts` (ACC_001 webkit, ACC_002 firefox), `add-user.spec.ts:127` (firefox) |
-| 3 | `tests/storefront/home.spec.ts:14` vẫn hardcode URL | 🟡 Thấp | Đề xuất: `toHaveURL(/^https?:\/\/[^/]+\/$/)` |
-| 4 | Text `"... - Dev environment"` gắn với môi trường dev | 🟡 Thấp | Cần xem lại nếu chạy trên môi trường khác |
-| 5 | 14 dòng code bị comment (`//await expect(page).toHaveURL('https://...')`) | ⚪ Tùy chọn | Trong `add-user.spec.ts`, `login.spec.ts`, fixture — giữ làm ghi chú hoặc xóa cho gọn |
-| 6 | Alias `@data/*` chưa có thư mục `src/data/` | ⚪ Tùy chọn | Tạo khi cần dữ liệu test tĩnh |
-| 7 | Tăng tốc CI | ⚪ Tùy chọn | Chỉ chạy chromium trên CI, hoặc tăng `workers` (cân nhắc tài khoản admin dùng chung) |
+| 1 | **Commit & push** bản fix flaky + CI chọn browser | 🔴 Cao | Đang ở trạng thái chưa commit (10 file sửa) |
+| 2 | Kiểm tra **user test bị sót** trên site | 🟠 Trung bình | Từ các lần `afterEach` bị cắt giữa chừng — tìm `tuyen-` trong Users |
+| 3 | `clickAddUserTab()` chưa có `waitForPageLoad()` | 🟡 Thấp | Chưa gây lỗi (chỉ dùng kiểm tra heading), nhưng nên thêm cho đồng bộ với `clickAddUserButton()` |
+| 4 | `tests/storefront/home.spec.ts:14` vẫn hardcode URL | 🟡 Thấp | Đề xuất: `toHaveURL(/^https?:\/\/[^/]+\/$/)` ([mục 6](#6-viết-assertion-đúng--tránh-assertion-luôn-pass)) |
+| 5 | Text `"... - Dev environment"` gắn với môi trường dev | 🟡 Thấp | Cần xem lại nếu chạy trên môi trường khác |
+| 6 | ~34 dòng code cũ để dạng comment (`//await ...`) | ⚪ Tùy chọn | Trong fixture, `add-user.page.ts`, `login.page.ts`, các file test — gồm cả bản cũ của `login()`, `hoverProfile()/clickLogout()`. Có git lưu lịch sử rồi nên có thể xóa cho gọn |
+| 7 | Alias `@data/*` chưa có thư mục `src/data/` | ⚪ Tùy chọn | Tạo khi cần dữ liệu test tĩnh |
+| 8 | Tăng `workers` trên CI | ⚪ Tùy chọn | Cân nhắc vì các test dùng chung tài khoản admin |
+| 9 | Cài GitHub CLI | ⚪ Tùy chọn | Cần IT cài (máy công ty) — xem [mục 16](#16-github-cli-gh) |
+
+---
+
+## 12. Điều tra test fail bằng HTML report và trace
+
+### 12.1 Bên trong thư mục report có gì?
+
+Sau khi tải artifact `playwright-report` và giải nén vào `ci-report/`:
+
+```
+ci-report/
+├── index.html      ← trang report; DỮ LIỆU KẾT QUẢ được nhúng ngay trong file này
+├── data/
+│   ├── <hash>.md   ← error-context: thông tin lỗi + "ảnh chụp" cấu trúc trang lúc fail
+│   └── <hash>.zip  ← trace: ghi lại toàn bộ quá trình chạy test
+└── trace/          ← chương trình Trace Viewer để mở file trace
+```
+
+| Thành phần | Chứa gì | Dùng để |
+|---|---|---|
+| `index.html` | Danh sách test, trạng thái, thông báo lỗi từng lần chạy (nhúng dạng file zip mã hóa base64) | Xem tổng quan, đọc thông báo lỗi |
+| `error-context.md` | Thông báo lỗi + **page snapshot** (cây accessibility của trang lúc fail: heading, ô nhập và **giá trị trong ô**, nút...) + đoạn code test đang chạy | Biết **trang đang ở trạng thái nào** khi fail |
+| trace `.zip` | Timeline mọi thao tác (`fill`, `click`, `expect`...) kèm thời điểm, **toàn bộ request mạng**, DOM, ảnh chụp màn hình | Biết **chuyện gì đã xảy ra** theo thứ tự thời gian |
+
+Cách xem dễ nhất: `npx playwright show-report ci-report` → mở test fail → tab **Errors**, **Trace**.
+
+### 12.2 Error-context: "ảnh chụp" trạng thái trang
+
+Đây là bằng chứng quyết định trong session. Ví dụ snapshot lúc test `duplicate email` fail:
+
+```yaml
+- heading "Add User" [level=1]
+- textbox "Username (required)"                                       ← trống!
+- textbox "Email (required)": tuyen-1791699032022@gmail.com
+- textbox "Password": (8(qGAtN$)XH8ymOi)h6rs!VE101-tuyen-1791699032022  ← username bị nối vào đây!
+- button "Add User"
+```
+
+Chỉ nhìn thông báo lỗi (*"New user created không hiện ra"*) thì không đoán được. Nhìn snapshot thì thấy ngay: **chữ bị điền nhầm ô**.
+
+### 12.3 Trace: timeline thao tác và request mạng
+
+Trace cho biết **thao tác nào xảy ra lúc nào** và **có request nào được gửi đi không**. So sánh test fail và test pass trên cùng Firefox:
+
+```
+TEST FAIL (username & email only)                 TEST PASS (@ACC_002)
++4.69s click link "Add User" → GET user-new.php   ...
++5.95s fill  Username                             +6.06s fill Password
++6.46s fill  Email                                +6.09s click button "Add User"
++6.48s click button "Add User"                           → POST user-new.php 302 ✅
+       → (KHÔNG có request nào) ❌                        → GET users.php?update=add
++6.54s expect "New user created." → chờ 5s → fail
+```
+
+**Kết luận chắc chắn rút ra:** server không hề nhận được form → không phải do server chậm, không phải do locator message sai.
+
+### 12.4 Quy trình điều tra (áp dụng được cho mọi lỗi)
+
+```
+1. HIỆN TƯỢNG     Test nào fail? Trên browser nào? Có pattern gì (liền nhau, cùng file)?
+       ↓
+2. BẰNG CHỨNG     Thông báo lỗi → snapshot trang lúc fail → trace (thao tác + network)
+       ↓
+3. GIẢ THUYẾT     Giải thích được TẤT CẢ bằng chứng chưa? So sánh với test pass xem khác gì?
+       ↓
+4. SỬA + KIỂM CHỨNG   Sửa trong POM → chạy lặp nhiều lần (--repeat-each)
+       ↓
+5. ĐIỀU CHỈNH     Còn fail? → có bằng chứng mới → quay lại bước 2, sẵn sàng sửa giả thuyết
+```
+
+Trong session đã đi qua vòng lặp này **3 lần**: lần 1 tìm ra "form không được gửi" → sửa `waitForPageLoad` → vẫn fail → lần 2 snapshot mới cho thấy "chữ vào nhầm ô" → tìm ra giành focus → sửa `fillAndVerify` → ổn.
+
+---
+
+## 13. Race condition và 3 lỗi flaky đã sửa
+
+### 13.1 Race condition là gì?
+
+**Race condition** (điều kiện tranh chấp) = kết quả phụ thuộc vào **thứ tự/thời điểm** hai việc chạy song song. Ở đây hai "người" cùng thao tác trên một trang:
+
+```
+Playwright (test)                     JavaScript của WordPress
+──────────────────                    ────────────────────────
+fill Username ─┐                      (đang tải script...)
+               │                      setTimeout → focus ô khác  ← chen vào giữa!
+fill Email  ───┘
+click Add User
+```
+
+Nếu JS của WordPress chạy **trước** hoặc **sau** thao tác của test → không sao. Nếu chạy **chen vào giữa** → lỗi. Vì thời điểm phụ thuộc tốc độ máy, nên:
+- **Lúc pass lúc fail** (flaky).
+- **Chromium nhanh** → ít gặp; **Firefox/WebKit trên máy CI chậm hơn** → hay gặp.
+- Chạy lại (retry) có khi pass → che giấu lỗi thật.
+
+### 13.2 Cơ chế then chốt: `fill()` gồm 2 bước
+
+```
+locator.fill("abc")
+   ├─ Bước 1: focus vào ô được chỉ định
+   └─ Bước 2: chèn "abc" vào ô ĐANG ĐƯỢC FOCUS   ← không phải "ô được chỉ định"!
+```
+
+Nếu giữa bước 1 và bước 2, JS của trang chuyển focus sang ô khác → **chữ bị chèn vào ô khác**. Đây là gốc rễ của lỗi 1 và lỗi 2.
+
+### 13.3 Lỗi 1 — Trang Add User: form không được gửi đi
+
+**Hiện tượng:** 7 test Add User fail trên Firefox — bấm "Add User" nhưng không có message nào (cả thành công lẫn lỗi).
+
+**Nguyên nhân (2 tầng):**
+
+1. **Trang tải rất nhiều JavaScript** (hơn 60 file: React, block-editor, `user-profile.js`...). `click()` vào link chỉ chờ trang **bắt đầu** tải → test thao tác khi JS chưa khởi tạo xong.
+2. **`user-profile.js` focus vào ô Password** (ô có mật khẩu tự sinh) khi khởi tạo → nếu đang `fill` ô Username, chữ bị **nối vào cuối mật khẩu**, ô Username **trống** → thiếu ô bắt buộc → form không được gửi.
+
+**Cách sửa:**
+
+```ts
+// add-user.page.ts — chờ trang tải xong sau khi mở form
+async clickAddUserButton() {
+    await this.addUserButtonLoc.click();
+    await this.waitForPageLoad();   // chờ sự kiện 'load'
+}
+
+// base.page.ts — điền xong phải kiểm tra, sai thì điền lại
+async fillAndVerify(locator: Locator, value: string) {
+    await expect(async () => {
+        await locator.fill(value);
+        await expect(locator).toHaveValue(value, { timeout: 1000 });
+    }).toPass({ timeout: 10000 });
+}
+
+// add-user.page.ts — mọi hàm điền form dùng fillAndVerify
+async fillUserName(userName: string) {
+    await this.fillAndVerify(this.userNameTextboxLoc, userName);
+}
+// tương tự: fillEmail, fillFirstName, fillLastName, fillPassword
+```
+
+**Vì sao `waitForPageLoad()` thôi là chưa đủ?** Lần sửa đầu chỉ thêm `waitForPageLoad()` → vẫn fail. Vì JS của WordPress giành focus **sau** sự kiện `load` (qua `setTimeout`/khởi tạo muộn). "Trang đã load" ≠ "trang đã đứng yên".
+
+**Ô Password bị nối thêm chữ có sao không?** Không:
+- Test không điền Password → không quan tâm mật khẩu là gì.
+- Test có điền Password → `fillPassword()` gọi sau cùng, `fill()` **ghi đè toàn bộ** ô.
+
+### 13.4 Lỗi 2 — Trang login: mật khẩu đè vào ô Username
+
+**Hiện tượng** (phát hiện khi chạy local Firefox): `afterEach` login lại admin bị treo. Snapshot:
+
+```yaml
+- textbox "Username or Email Address": StrongPass@BetterBytesAcademy   ← mật khẩu nằm trong ô Username!
+```
+
+**Nguyên nhân:** sau khi trang login tải ~200ms, WordPress tự **focus + bôi đen ô Username** (hàm `wp_attempt_focus`). Nếu rơi đúng lúc Playwright đang `fill` ô Password → mật khẩu **đè lên** (vì ô Username đang bị bôi đen) → login sai.
+
+**Cách sửa — điền hết rồi mới kiểm tra hết:**
+
+```ts
+async login(userName: string, password: string) {
+    await expect(async () => {
+        await this.userNameLogin.fill(userName);
+        await this.passwordLogin.fill(password);
+        await expect(this.userNameLogin).toHaveValue(userName, { timeout: 1000 });
+        await expect(this.passwordLogin).toHaveValue(password, { timeout: 1000 });
+    }).toPass({ timeout: 10000 });
+    await this.loginButton.click();
+}
+```
+
+### 13.5 Kiểm tra từng ô hay kiểm tra cả form? (dễ nhầm)
+
+Câu hỏi đã đặt ra trong session: *"sao `login()` không dùng `fillAndVerify()`?"*
+
+**Nếu dùng `fillAndVerify()` cho từng ô:**
+
+```
+fillAndVerify(Username, "admin")
+   fill → kiểm tra Username = "admin" ✅ → XONG, không bao giờ quay lại
+
+fillAndVerify(Password, "pass")
+   fill → WordPress kéo focus về Username → "pass" đè vào Username
+   kiểm tra Password = "" ❌ → điền lại → Password = "pass" ✅ → XONG
+
+click Log In → Username = "pass" ❌ → login sai
+```
+
+Ô Username **đã kiểm tra xong trước khi bị hỏng** → không ai phát hiện.
+
+**Kiểm tra cả form (cách đang dùng):**
+
+```
+Vòng 1: fill Username, fill Password (bị đè sang Username)
+        kiểm tra Username = "pass" ❌ → thử lại CẢ CỤM
+Vòng 2: fill Username, fill Password (WordPress đã focus xong, không giành nữa)
+        kiểm tra cả 2 ✅ → click Log In
+```
+
+**Vậy sao trang Add User lại dùng từng ô được?** Vì **ô bị giành focus khác nhau**:
+
+| | Trang login | Trang Add User |
+|---|---|---|
+| JS kéo focus về ô nào | **Username** — ô test **cần đúng giá trị** | **Password** — ô mật khẩu tự sinh |
+| Ô bị hỏng | Username — ô **đã kiểm tra trước đó** | Password — bị nối chữ, nhưng vô hại (xem 13.3) |
+| Ô đang điền | — | Bị **trống** → `fillAndVerify` của chính ô đó phát hiện ngay ✅ |
+| Kết luận | Phải kiểm tra **cả form** | Kiểm tra **từng ô** là đủ |
+
+**Quy tắc:** form nhiều ô rồi submit → cần đảm bảo **trạng thái cuối cùng của cả form** đúng ngay trước khi submit. "Đúng từng ô tại thời điểm vừa điền" là chưa đủ nếu các ô có thể làm hỏng nhau.
+
+**Có nên tách thành helper chung `fillAllAndVerify()`?** Hiện chỉ `login()` cần → viết trực tiếp là đủ. Theo nguyên tắc **"rule of three"** ([04-utils-design.md](../project-documentations/04-utils-design.md)): chỉ tách helper chung khi có 2–3 nơi cần dùng.
+
+### 13.6 Lỗi 3 — Menu Howdy / Log Out (hover)
+
+**Hiện tượng:** `account-permissions` flaky trên WebKit. Log lỗi:
+
+```
+- waiting for getByRole('menuitem', { name: 'Log Out' })
+  - element is not stable        ← menu đang trong hiệu ứng mở ra
+- retrying click action
+  - element is not visible       ← menu đã đóng lại
+- retrying click action ...      ← chờ mãi tới hết timeout
+```
+
+**Nguyên nhân:** menu con của "Howdy" mở bằng JS `hoverIntent` (trong `admin-bar.js`): có **độ trễ + hiệu ứng**, và chỉ mở khi chuột **đi vào** phần tử. Code cũ tách rời `hover()` rồi `click()` → click lúc menu chưa mở xong / đã đóng → `click()` chỉ **chờ** menu hiện lại, nhưng không ai hover lại → treo.
+
+**Lần sửa 1 (chưa đúng):**
+
+```ts
+await expect(async () => {
+    await this.hoverProfileLoc.hover();
+    await this.logoutLoc.click({ timeout: 2000 });
+}).toPass({ timeout: 15000 });
+```
+
+Vẫn fail: *"Timeout 15000ms exceeded while waiting on the predicate"*. Vì sao thử lại mà không ăn thua? **Chuột đã nằm sẵn ở đúng vị trí đó** → `hover()` lần 2, 3... đưa chuột tới chỗ cũ → trình duyệt **không phát sinh sự kiện "đi vào" mới** (`mouseover`/`mouseenter`) → JS không biết để mở menu.
+
+**Lần sửa 2 (đúng):** mỗi lần thử, **đưa chuột ra ngoài trước**:
+
+```ts
+async logout() {
+    await expect(async () => {
+        await this.page.mouse.move(0, 0);              // đưa chuột ra góc trang
+        await this.hoverProfileLoc.hover();            // → tạo lại sự kiện "đi vào"
+        await this.logoutLoc.click({ timeout: 2000 }); // click hụt → báo lỗi sau 2s, không treo
+    }).toPass({ timeout: 15000 });
+}
+```
+
+> **Bài học:** khi thử lại, phải thử lại **từ bước tạo ra trạng thái cần thiết**, không chỉ lặp lại thao tác cuối. Ở đây trạng thái cần thiết là "chuột vừa đi vào menu", nên phải đưa chuột ra rồi vào lại.
+
+**Phương án dự phòng** (chưa dùng): đọc `href` của link Log Out (link luôn có trong DOM, chỉ bị ẩn) rồi `page.goto(href)` — ổn định 100% vì không hover, nhưng không còn thao tác như người dùng thật. Chấp nhận được vì logout ở đây chỉ là bước chuẩn bị, không phải chức năng đang test.
+
+### 13.7 `expect(...).toPass()` hoạt động thế nào?
+
+```ts
+await expect(async () => {
+    // khối code: nếu có lệnh nào throw lỗi (fill/click/expect fail) → coi như "chưa pass"
+}).toPass({ timeout: 10000 });
+```
+
+- Chạy khối code → nếu **có lỗi** → chờ một chút → **chạy lại từ đầu khối** → lặp tới khi pass hoặc hết `timeout`.
+- **Timeout bên trong phải ngắn** (`{ timeout: 1000 }` cho `toHaveValue`, `{ timeout: 2000 }` cho `click`): nếu để mặc định (5s cho `expect`, cả phần test còn lại cho `click`), một vòng thử có thể ăn hết thời gian → không kịp thử lại lần nào.
+- Khác với `retries` trong config: `retries` chạy lại **cả test** từ đầu; `toPass` chỉ chạy lại **một cụm thao tác** ngay tại chỗ.
+
+### 13.8 Nguyên tắc chung (đã ghi vào [01-website-feature.md §4](../project-documentations/01-website-feature.md#4-lưu-ý-chung-về-timing-race-condition))
+
+1. Thao tác xong phải **kiểm tra kết quả thật**, sai thì **thử lại** bằng `toPass()` — không giả định thao tác luôn thành công.
+2. Thử lại **từ bước tạo ra trạng thái cần thiết** + timeout ngắn cho từng thao tác bên trong.
+3. Form nhiều ô rồi submit → kiểm tra **trạng thái cuối cùng của cả form** nếu các ô có thể làm hỏng nhau.
+4. **Không** dùng `page.waitForTimeout(3000)` (chờ cố định): máy nhanh thì phí thời gian, máy chậm thì vẫn có thể chưa đủ.
+5. Bọc cách xử lý trong **POM** (`login()`, `logout()`, `fillAndVerify()`) → mọi test tự động được bảo vệ, không phải sửa từng file test.
+
+---
+
+## 14. Timeout trong Playwright
+
+### 14.1 Các tầng timeout
+
+| Tầng | Mặc định | Áp dụng cho | Ví dụ trong session |
+|---|---|---|---|
+| **Test timeout** | 30s | Toàn bộ 1 test **gồm cả `beforeEach`/`afterEach`** | Nâng lên 60s cho `account-permissions` |
+| **Expect timeout** | 5s | Mỗi lệnh `expect(...)` tự chờ tối đa bao lâu | `toHaveValue(..., { timeout: 1000 })` trong `toPass` |
+| **Action timeout** | Không giới hạn riêng (bị chặn bởi test timeout) | `click`, `fill`, `hover`... | `click({ timeout: 2000 })` trong `logout()` |
+| **`toPass` timeout** | — (phải tự đặt) | Tổng thời gian thử lại một cụm | `toPass({ timeout: 15000 })` |
+| **Job timeout (CI)** | — | Cả job GitHub Actions | `timeout-minutes: 60` |
+
+### 14.2 Bẫy: timeout của test **tính chung** với hook
+
+```
+|<──────────────────── 30 giây ────────────────────>|
+| beforeEach | test body ............ | afterEach ...✂ bị cắt!
+             (thử logout mất 15s)       (login admin → tìm → xóa user)
+```
+
+Đã gặp thực tế: test body tốn ~15s thử logout → `afterEach` không đủ thời gian → *"Test timeout of 30000ms exceeded while running afterEach hook"* → **user vừa tạo không được xóa**, sót lại trên site.
+
+### 14.3 Các cách tăng timeout
+
+| Cách viết | Phạm vi | Khi nào dùng |
+|---|---|---|
+| `test.describe.configure({ timeout: 60000 })` (đầu `describe`) | Mọi test trong `describe` | ✅ Đang dùng cho `account-permissions` — cả 2 test đều dài |
+| `test.slow()` (trong 1 test) | Riêng test đó, **nhân 3** (30s → 90s) | 1–2 test chậm bất thường |
+| `test.setTimeout(60000)` (trong 1 test) | Riêng test đó | Cần con số cụ thể cho 1 test |
+| `timeout` trong `playwright.config.ts` | **Toàn bộ** project | ❌ Không nên — test hỏng thật sẽ mất lâu hơn mới báo lỗi |
+
+Vị trí đặt `configure`:
+
+```ts
+test.describe("ACCOUNT-Account", () => {
+    test.describe.configure({ timeout: 60000 }); // luồng phân quyền dài, cần nhiều thời gian hơn mặc định 30s
+
+    let userPage: UserPage;
+    // ...
+```
+
+**Vì sao 60s?** Lần pass trên CI đã đo tới ~22s — sát 30s. Luồng: tạo user → logout → login user mới → kiểm tra menu → logout → login admin → tìm → xóa user. Nếu logout phải thử lại thêm vài giây là vượt.
+
+---
+
+## 15. CI chọn browser và chạy tay
+
+### 15.1 Mục tiêu
+
+- **Push / Pull Request** → tự động chạy **chỉ chromium** (nhanh: 26 test thay vì 78).
+- **Khi cần** → chạy **đủ 3 browser** mà **không cần commit** gì thêm.
+
+### 15.2 `workflow_dispatch` — chạy workflow bằng tay
+
+```yaml
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:                 # cho phép chạy tay từ tab Actions
+    inputs:
+      browsers:
+        description: 'Browser cần chạy'
+        type: choice                 # ô chọn (dropdown)
+        options: [chromium, all]
+        default: chromium
+```
+
+`workflow_dispatch` thêm nút **Run workflow** trên GitHub. `inputs` khai báo các ô nhập/chọn hiện ra khi bấm nút đó.
+
+### 15.3 Biến `BROWSERS` và giá trị mặc định
+
+```yaml
+jobs:
+  test:
+    env:
+      BROWSERS: ${{ inputs.browsers || 'chromium' }}
+```
+
+- Chạy tay → `inputs.browsers` = giá trị bạn chọn (`chromium` hoặc `all`).
+- Chạy do push/PR → **không có input** → `inputs.browsers` rỗng → `|| 'chromium'` lấy giá trị mặc định.
+
+`||` ở đây nghĩa là "nếu vế trái rỗng thì lấy vế phải" — giống `||` trong JavaScript.
+
+### 15.4 Lệnh nhiều dòng `run: |` và `if` của bash
+
+```yaml
+- name: Install Playwright Browsers
+  run: |
+    if [ "$BROWSERS" = "all" ]; then
+      npx playwright install --with-deps            # cài cả 3
+    else
+      npx playwright install --with-deps chromium   # chỉ cài chromium
+    fi
+- name: Run Playwright tests
+  run: |
+    if [ "$BROWSERS" = "all" ]; then
+      npx playwright test                           # chạy cả 3 project
+    else
+      npx playwright test --project=chromium        # chỉ project tên 'chromium'
+    fi
+```
+
+- `run: |` — dấu `|` cho phép viết **nhiều dòng** lệnh shell.
+- Máy CI là Ubuntu nên dùng cú pháp **bash**: `if [ ... ]; then ... else ... fi`.
+- `--project=chromium` — tên phải khớp **chính xác** `name: 'chromium'` trong `playwright.config.ts`.
+- Phải sửa **cả 2 bước**: chỉ sửa bước chạy test thì CI vẫn mất thời gian tải 2 browser không dùng.
+- Đọc input qua biến môi trường `$BROWSERS` (thay vì nhét thẳng `${{ inputs.browsers }}` vào script) là cách an toàn được khuyến nghị — giá trị được truyền như dữ liệu, không bị ghép thành code shell.
+
+### 15.5 Cách chạy tay
+
+1. Repo trên GitHub → tab **Actions**.
+2. Cột trái: chọn workflow **Playwright Tests**.
+3. Bên phải: nút **Run workflow** → chọn branch → ô **Browser cần chạy**: `chromium` hoặc `all` → **Run workflow**.
+
+| Nút | Làm gì | Đổi được browser? |
+|---|---|---|
+| **Run workflow** | Tạo một lần chạy **mới** với input bạn chọn | ✅ |
+| **Re-run jobs** (ở một lần chạy cũ) | Chạy lại **đúng cấu hình cũ** | ❌ |
+
+**Điều kiện:** nút **Run workflow** chỉ xuất hiện khi file workflow có `workflow_dispatch` **đã nằm trên nhánh mặc định** (`main`) — tức là phải commit & push thay đổi này 1 lần.
+
+### 15.6 Đánh đổi
+
+| | Chỉ chromium | Cả 3 browser |
+|---|---|---|
+| Số test | 26 | 78 |
+| Thời gian (ước tính) | ~5–7 phút | ~18 phút |
+| Bắt được lỗi riêng Firefox/WebKit | ❌ | ✅ |
+
+Chính các lỗi race condition ở [mục 13](#13-race-condition-và-3-lỗi-flaky-đã-sửa) **chỉ lộ ra trên Firefox/WebKit** → nếu chỉ chạy chromium sẽ không phát hiện. Nên: trước khi merge thay đổi lớn (nhất là sửa các trang login/Add User/admin bar) → chạy tay với `all`, hoặc `npx playwright test` ở local.
+
+### 15.7 Cách khác (không chọn): lọc project trong `playwright.config.ts`
+
+```ts
+projects: [
+  { name: 'chromium', ... },
+  ...(process.env.CI ? [] : [ { name: 'firefox', ... }, { name: 'webkit', ... } ]),
+],
+```
+
+Không chọn vì: trộn logic CI vào config, vẫn phải sửa bước cài browser trong workflow, và không cho chọn lúc chạy tay.
+
+---
+
+## 16. GitHub CLI (`gh`)
+
+### 16.1 Là gì, khác `git` thế nào?
+
+| | `git` | `gh` (GitHub CLI) |
+|---|---|---|
+| Làm việc với | **Mã nguồn**, lịch sử commit | **Các tính năng của trang GitHub** |
+| Ví dụ | commit, branch, push, pull | Secrets, Actions (CI), Pull Request, Issue |
+| Gắn với GitHub? | Không — dùng được với GitLab, Bitbucket... | Chỉ GitHub |
+
+Nói đơn giản: `git push` đẩy code lên GitHub; những việc bạn làm **trên giao diện web** sau đó (xem CI, tải report, khai báo secrets, tạo PR...) thì `gh` cho làm bằng lệnh.
+
+### 16.2 Tương ứng với các việc đã làm trên web trong session
+
+| Việc đã làm trên web | Lệnh `gh` |
+|---|---|
+| Khai báo secret | `gh secret set BASE_URL` (lệnh hỏi giá trị, không lưu vào lịch sử terminal) |
+| Kiểm tra secrets đã có | `gh secret list` |
+| Xem các lần chạy CI | `gh run list` |
+| Theo dõi CI đang chạy | `gh run watch` |
+| Xem log các bước fail | `gh run view <run-id> --log-failed` |
+| Tải report | `gh run download <run-id> -n playwright-report -D ci-report` |
+| Chạy lại job fail | `gh run rerun <run-id> --failed` |
+| Chạy tay workflow, chọn browser | `gh workflow run playwright.yml -f browsers=all` |
+
+Khác: `gh pr create` (tạo PR), `gh pr checkout 12` (lấy code PR về máy), `gh repo view --web` (mở repo trên trình duyệt).
+
+### 16.3 Cài đặt — và vấn đề máy công ty
+
+Cài thông thường trên Windows:
+
+```bash
+winget install --id GitHub.cli
+gh auth login     # đăng nhập 1 lần: GitHub.com → SSH → đăng nhập qua trình duyệt
+```
+
+**Máy công ty:** gói cài (MSI) ghi vào `C:\Program Files\` → **cần quyền Administrator** → không tự cài được.
+
+| Hướng | Đánh giá |
+|---|---|
+| Bản **portable** (file `.zip`, giải nén vào thư mục user) | Kỹ thuật thì không cần admin, **nhưng** việc cần admin để cài thường là **chính sách bảo mật** của công ty — "lách" có thể vi phạm quy định. Thêm nữa, `gh` lưu **token truy cập GitHub** trên máy → IT thường muốn biết. Chỉ làm khi chắc chắn được phép |
+| **Nhờ IT cài** | ✅ Cách chuẩn. Gửi IT: tên phần mềm (GitHub CLI, GitHub Inc., https://cli.github.com/), lệnh cài, mục đích sử dụng |
+| **Không dùng `gh`** | ✅ Hoàn toàn đủ — mọi việc làm được trên web (tab Actions, Settings → Secrets, mục Artifacts) |
+
+**Phân biệt:** "làm được về mặt kỹ thuật" ≠ "nên làm". Với máy công ty, chính sách bảo mật được ưu tiên.
+
+`gh` là **tùy chọn**: không có nó vẫn làm được mọi thứ, chỉ thêm vài bước thủ công (tải report, chụp màn hình log...).
